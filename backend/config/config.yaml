@@ -131,10 +131,13 @@ vectordb:
 rag:
   retriever:
     top_k: 20                          # 후보당 검색 수
+    lookback_days: 14                  # 최근 N일 기사만 검색 (null이면 전체)
 
   reranker:
     min_score: 0.3                     # 유사도 임계값
     deduplicate: true                  # 동일 기사 중복 제거
+
+  purge_days: 60                       # N일 이전 벡터 자동 삭제 (null이면 비활성)
 
   scorer:
     provider: openai                   # openai | anthropic

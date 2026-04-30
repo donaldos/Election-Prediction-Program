@@ -48,13 +48,24 @@ class ChromaRepository(AbstractVectorRepository):
         logger.info("[%s] 로드 완료 — persist=%s, collection=%s", self.name, self._persist_dir, self._collection_name)
 
     def _do_upsert(self, chunks: list[ChunkWithEmbedding]) -> int:
+        from datetime import datetime
+
         ids = [c.id for c in chunks]
         embeddings = [c.embedding for c in chunks]
         metadatas = []
         documents = []
         for c in chunks:
             meta = c.metadata
-            meta["published_at"] = str(meta["published_at"])
+            pub = meta["published_at"]
+            if isinstance(pub, datetime):
+                meta["published_at_ts"] = pub.timestamp()
+                meta["published_at"] = pub.isoformat()
+            elif isinstance(pub, str):
+                meta["published_at_ts"] = datetime.fromisoformat(pub).timestamp()
+                meta["published_at"] = pub
+            else:
+                meta["published_at_ts"] = 0.0
+                meta["published_at"] = str(pub)
             metadatas.append(meta)
             documents.append(c.text)
 
@@ -100,3 +111,13 @@ class ChromaRepository(AbstractVectorRepository):
 
     def _do_count(self) -> int:
         return self._collection.count()
+
+    def _find_ids_older_than(self, cutoff_iso: str) -> list[str]:
+        from datetime import datetime
+
+        cutoff_ts = datetime.fromisoformat(cutoff_iso).timestamp()
+        results = self._collection.get(
+            where={"published_at_ts": {"$lt": cutoff_ts}},
+            include=[],
+        )
+        return results["ids"] if results["ids"] else []

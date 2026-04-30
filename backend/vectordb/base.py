@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from datetime import date, datetime, timedelta
 
 from ingestion.base_registry import ComponentRegistry
 from models.chunk import ChunkWithEmbedding
@@ -87,6 +88,28 @@ class AbstractVectorRepository(ABC):
     @abstractmethod
     def _do_count(self) -> int:
         ...
+
+    def delete_older_than(self, days: int) -> int:
+        if not self.is_loaded:
+            self.load()
+
+        cutoff = datetime.combine(
+            date.today() - timedelta(days=days),
+            datetime.min.time(),
+        ).isoformat()
+
+        logger.info("[%s] 만료 정리 시작 — %d일 이전 벡터 삭제 (cutoff=%s)", self.name, days, cutoff)
+        ids = self._find_ids_older_than(cutoff)
+        if not ids:
+            logger.info("[%s] 만료 대상 없음", self.name)
+            return 0
+
+        count = self._do_delete(ids)
+        logger.info("[%s] 만료 정리 완료 — %d개 삭제", self.name, count)
+        return count
+
+    def _find_ids_older_than(self, cutoff_iso: str) -> list[str]:
+        return []
 
 
 VectorRepositoryRegistry = ComponentRegistry(AbstractVectorRepository, "VectorRepository")

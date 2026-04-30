@@ -107,3 +107,18 @@ class QdrantRepository(AbstractVectorRepository):
     def _do_count(self) -> int:
         info = self._client.get_collection(self._collection)
         return info.points_count
+
+    def _find_ids_older_than(self, cutoff_iso: str) -> list[str]:
+        from qdrant_client.models import Filter, FieldCondition, Range
+
+        results = self._client.scroll(
+            collection_name=self._collection,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="published_at", range=Range(lt=cutoff_iso)),
+            ]),
+            limit=10000,
+            with_payload=False,
+            with_vectors=False,
+        )
+        points, _ = results
+        return [str(p.id) for p in points]

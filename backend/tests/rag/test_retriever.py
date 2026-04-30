@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
-from unittest.mock import MagicMock
+from datetime import date, datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -260,3 +260,60 @@ class TestEmbedQuery:
         embedder.embed_query("질의")
 
         assert embedder.is_loaded
+
+
+class TestRetrieverLookbackDays:
+
+    @patch("rag.retriever.date")
+    def test_filters_old_articles(self, mock_date):
+        mock_date.today.return_value = date(2026, 4, 30)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        old_result = {
+            "id": "old", "score": 0.9, "text": "오래된 기사",
+            "article_url": "https://a.com/old", "source": "s", "title": "t",
+            "published_at": "2026-04-10T00:00:00",
+            "candidate": "c", "district_id": "d",
+        }
+        recent_result = {
+            "id": "new", "score": 0.8, "text": "최신 기사",
+            "article_url": "https://a.com/new", "source": "s", "title": "t",
+            "published_at": "2026-04-25T00:00:00",
+            "candidate": "c", "district_id": "d",
+        }
+        embedder = _make_embedder()
+        repo = _make_repo(raw_results=[old_result, recent_result])
+        retriever = Retriever(embedder=embedder, vector_repo=repo, lookback_days=7)
+
+        results = retriever.retrieve("질의", district_id="d")
+
+        assert len(results) == 1
+        assert results[0].id == "new"
+
+    def test_no_filter_when_lookback_none(self):
+        embedder = _make_embedder()
+        repo = _make_repo()
+        retriever = Retriever(embedder=embedder, vector_repo=repo, lookback_days=None)
+
+        results = retriever.retrieve("판세", district_id="pyeongtaek_b")
+
+        assert len(results) == 2
+
+    @patch("rag.retriever.date")
+    def test_all_filtered_returns_empty(self, mock_date):
+        mock_date.today.return_value = date(2026, 4, 30)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        old_result = {
+            "id": "old", "score": 0.9, "text": "오래된 기사",
+            "article_url": "https://a.com/old", "source": "s", "title": "t",
+            "published_at": "2026-03-01T00:00:00",
+            "candidate": "c", "district_id": "d",
+        }
+        embedder = _make_embedder()
+        repo = _make_repo(raw_results=[old_result])
+        retriever = Retriever(embedder=embedder, vector_repo=repo, lookback_days=7)
+
+        results = retriever.retrieve("질의", district_id="d")
+
+        assert results == []

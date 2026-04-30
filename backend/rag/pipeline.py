@@ -1,10 +1,13 @@
 """RAG 판정 파이프라인 CLI: retrieve → rerank → score.
 
 사용법:
+    # 판정 모드 (기존)
     PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b
     PYTHONPATH=. python -m rag.pipeline --district busan_bukgu_gap
-    PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --top-k 10
-    PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --skip-score
+
+    # 단발 질의 모드
+    PYTHONPATH=. python -m rag.pipeline --query "조국의 평택을 지지율 변화는?"
+    PYTHONPATH=. python -m rag.pipeline --query "한동훈과 박민식 비교" --top-k 10
 """
 from __future__ import annotations
 
@@ -71,6 +74,7 @@ def _build_retriever(config: dict, embedder, vector_repo):
         embedder=embedder,
         vector_repo=vector_repo,
         top_k=rag_cfg.get("top_k", 20),
+        lookback_days=rag_cfg.get("lookback_days"),
     )
 
 
@@ -96,6 +100,44 @@ def _build_scorer(config: dict):
         if k not in ("provider",)
     }
     return ScorerRegistry.create(provider, **params)
+
+
+QA_SYSTEM_PROMPT = """\
+당신은 한국 선거 뉴스 분석 전문가입니다.
+제공된 뉴스 기사 청크를 근거로 사용자의 질문에 답변합니다.
+
+규칙:
+- 제공된 뉴스 청크에 근거하여 답변하세요. 근거가 없는 내용은 "제공된 기사에서 관련 내용을 찾을 수 없습니다"라고 답하세요.
+- 답변은 한국어로 작성하세요.
+- 출처(기사 제목, 매체)를 명시하세요.
+- 간결하고 핵심적으로 답변하세요."""
+
+
+def _build_qa_prompt(query: str, chunks) -> str:
+    lines = [f"## 사용자 질문\n{query}\n"]
+    lines.append(f"## 참고 뉴스 청크 ({len(chunks)}건)\n")
+    for i, chunk in enumerate(chunks, 1):
+        lines.append(
+            f"[{i}] {chunk.title} ({chunk.source}, {chunk.published_at:%Y-%m-%d})"
+        )
+        text_preview = chunk.text[:500].replace("\n", " ")
+        lines.append(f"    {text_preview}")
+        lines.append("")
+    lines.append("위 뉴스를 근거로 사용자의 질문에 답변하세요.")
+    return "\n".join(lines)
+
+
+def _print_qa_answer(query: str, answer: str, chunk_count: int) -> None:
+    print()
+    print("=" * 60)
+    print(f"❓ 질문: {query}")
+    print("=" * 60)
+    print()
+    print(answer)
+    print()
+    print(f"  📰 참고 청크: {chunk_count}건")
+    print("=" * 60)
+    print()
 
 
 def _print_chunks(results, district: dict) -> None:
@@ -134,19 +176,77 @@ def _print_verdict(verdict) -> None:
     print()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Election Radar RAG 판정 파이프라인")
-    parser.add_argument(
-        "--district", required=True,
-        help="선거구 ID (pyeongtaek_b | busan_bukgu_gap)",
+def _run_query_mode(args, config: dict) -> None:
+    """단발 질의 모드: 사용자 질문 → VectorDB 검색 → LLM 답변."""
+    import time
+
+    logger.info("컴포넌트 초기화 중…")
+    embedder = _build_embedder(config)
+    vector_repo = _build_vector_repo(config)
+
+    if args.top_k:
+        config.setdefault("rag", {}).setdefault("retriever", {})["top_k"] = args.top_k
+    if args.min_score is not None:
+        config.setdefault("rag", {}).setdefault("reranker", {})["min_score"] = args.min_score
+    if args.lookback_days is not None:
+        config.setdefault("rag", {}).setdefault("retriever", {})["lookback_days"] = args.lookback_days
+
+    retriever = _build_retriever(config, embedder, vector_repo)
+    reranker = _build_reranker(config)
+
+    logger.info("VectorDB 저장 건수: %d", vector_repo.count())
+
+    query = args.query
+    logger.info("단발 질의 검색 — '%s'", query)
+
+    from rag.retriever import Retriever
+    query_vector = embedder.embed_query(query)
+    raw_results = vector_repo.search(
+        query_vector=query_vector,
+        top_k=config.get("rag", {}).get("retriever", {}).get("top_k", 20),
+        filters=None,
     )
-    parser.add_argument("--top-k", type=int, default=None, help="검색 수 (config 우선)")
-    parser.add_argument("--min-score", type=float, default=None, help="유사도 임계값 (config 우선)")
-    parser.add_argument("--skip-score", action="store_true", help="LLM 판정 생략 (검색 결과만)")
-    args = parser.parse_args()
 
-    config = _load_config()
+    from models.score import SearchResult
+    results = []
+    for r in raw_results:
+        try:
+            results.append(SearchResult(
+                id=r["id"],
+                score=r["score"],
+                text=r.get("text", ""),
+                article_url=r.get("article_url", ""),
+                source=r.get("source", ""),
+                title=r.get("title", ""),
+                published_at=r.get("published_at"),
+                candidate=r.get("candidate", ""),
+                district_id=r.get("district_id", ""),
+            ))
+        except Exception:
+            continue
 
+    results = reranker.rerank(query, results)
+
+    if not results:
+        print("\n  검색 결과가 없습니다. 수집 파이프라인을 먼저 실행하세요.\n")
+        return
+
+    _print_chunks(results, {"name": "전체"})
+
+    scorer = _build_scorer(config)
+    user_prompt = _build_qa_prompt(query, results)
+
+    logger.info("LLM 질의 응답 요청 — 청크 %d건", len(results))
+    t0 = time.monotonic()
+    answer = scorer._call_llm(QA_SYSTEM_PROMPT, user_prompt, json_mode=False)
+    elapsed = time.monotonic() - t0
+    logger.info("LLM 응답 수신 — %.1f초", elapsed)
+
+    _print_qa_answer(query, answer, len(results))
+
+
+def _run_verdict_mode(args, config: dict) -> None:
+    """판정 모드: 선거구별 판세 분석."""
     district = _find_district(config, args.district)
     if not district:
         available = [d["id"] for d in config.get("districts", [])]
@@ -157,17 +257,23 @@ def main() -> None:
     embedder = _build_embedder(config)
     vector_repo = _build_vector_repo(config)
 
+    purge_days = args.purge_days or config.get("rag", {}).get("purge_days")
+    if purge_days:
+        deleted = vector_repo.delete_older_than(purge_days)
+        logger.info("만료 정리 완료 — %d개 삭제 (%d일 이전)", deleted, purge_days)
+
     if args.top_k:
         config.setdefault("rag", {}).setdefault("retriever", {})["top_k"] = args.top_k
     if args.min_score is not None:
         config.setdefault("rag", {}).setdefault("reranker", {})["min_score"] = args.min_score
+    if args.lookback_days is not None:
+        config.setdefault("rag", {}).setdefault("retriever", {})["lookback_days"] = args.lookback_days
 
     retriever = _build_retriever(config, embedder, vector_repo)
     reranker = _build_reranker(config)
 
     logger.info("VectorDB 저장 건수: %d", vector_repo.count())
 
-    # retrieve → rerank
     logger.info("선거구 통합 검색 시작 — %s", district["name"])
     all_results = retriever.retrieve_for_district(district)
     query = f"{district['name']} 선거 판세"
@@ -179,11 +285,32 @@ def main() -> None:
         logger.info("--skip-score 지정 — LLM 판정 생략")
         return
 
-    # score
     scorer = _build_scorer(config)
     verdict = scorer.score(all_results, district)
 
     _print_verdict(verdict)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Election Radar RAG 판정 파이프라인")
+    parser.add_argument("--district", default=None, help="선거구 ID (pyeongtaek_b | busan_bukgu_gap)")
+    parser.add_argument("--query", default=None, help="단발 질의 모드 — 자유 질문")
+    parser.add_argument("--top-k", type=int, default=None, help="검색 수 (config 우선)")
+    parser.add_argument("--min-score", type=float, default=None, help="유사도 임계값 (config 우선)")
+    parser.add_argument("--lookback-days", type=int, default=None, help="최근 N일 기사만 검색 (config 우선)")
+    parser.add_argument("--purge-days", type=int, default=None, help="N일 이전 벡터 삭제")
+    parser.add_argument("--skip-score", action="store_true", help="LLM 판정 생략 (검색 결과만)")
+    args = parser.parse_args()
+
+    if not args.query and not args.district:
+        parser.error("--district 또는 --query 중 하나를 지정하세요.")
+
+    config = _load_config()
+
+    if args.query:
+        _run_query_mode(args, config)
+    else:
+        _run_verdict_mode(args, config)
 
 
 if __name__ == "__main__":

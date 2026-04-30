@@ -29,9 +29,16 @@ class Reranker:
         before_count = len(results)
 
         filtered = [r for r in results if r.score >= self._min_score]
+        score_dropped = before_count - len(filtered)
+        if score_dropped:
+            logger.debug("임계값 필터링 — %d건 제거 (min_score=%.2f)", score_dropped, self._min_score)
 
         if self._deduplicate:
+            before_dedup = len(filtered)
             filtered = self._deduplicate_by_url(filtered)
+            dedup_dropped = before_dedup - len(filtered)
+            if dedup_dropped:
+                logger.debug("URL 중복 제거 — %d건 제거", dedup_dropped)
 
         filtered.sort(key=lambda r: r.score, reverse=True)
 

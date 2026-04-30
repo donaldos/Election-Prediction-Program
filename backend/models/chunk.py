@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import uuid
+import hashlib
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Chunk(BaseModel):
@@ -23,11 +23,22 @@ class Chunk(BaseModel):
     chunker_type: str
 
 
+def _deterministic_id(article_url: str, chunk_index: int) -> str:
+    key = f"{article_url}::chunk::{chunk_index}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 class ChunkWithEmbedding(Chunk):
     """임베더 출력 단위. VectorDB 저장 직전 상태."""
 
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = Field(default="")
     embedding: list[float]
+
+    @model_validator(mode="after")
+    def _set_deterministic_id(self) -> ChunkWithEmbedding:
+        if not self.id:
+            self.id = _deterministic_id(self.article_url, self.chunk_index)
+        return self
 
     @property
     def metadata(self) -> dict:

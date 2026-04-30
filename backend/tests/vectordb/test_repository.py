@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -114,6 +114,42 @@ class TestAbstractVectorRepository:
         result = AbstractVectorRepository.count(repo)
         assert result == 42
         repo.load.assert_called_once()
+
+    @patch("vectordb.base.date")
+    def test_delete_older_than_calls_find_and_delete(self, mock_date):
+        mock_date.today.return_value = date(2026, 4, 30)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        repo = MagicMock(spec=AbstractVectorRepository)
+        repo.name = "mock"
+        repo.is_loaded = True
+        repo._find_ids_older_than.return_value = ["old-1", "old-2"]
+        repo._do_delete.return_value = 2
+
+        result = AbstractVectorRepository.delete_older_than(repo, 30)
+
+        assert result == 2
+        repo._find_ids_older_than.assert_called_once()
+        repo._do_delete.assert_called_once_with(["old-1", "old-2"])
+
+    @patch("vectordb.base.date")
+    def test_delete_older_than_no_targets(self, mock_date):
+        mock_date.today.return_value = date(2026, 4, 30)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+
+        repo = MagicMock(spec=AbstractVectorRepository)
+        repo.name = "mock"
+        repo.is_loaded = True
+        repo._find_ids_older_than.return_value = []
+
+        result = AbstractVectorRepository.delete_older_than(repo, 30)
+
+        assert result == 0
+        repo._do_delete.assert_not_called()
+
+    def test_default_find_ids_older_than_returns_empty(self):
+        result = AbstractVectorRepository._find_ids_older_than(MagicMock(), "2026-01-01T00:00:00")
+        assert result == []
 
 
 # ── VectorRepositoryRegistry ─────────────────────────────
@@ -307,6 +343,34 @@ class TestChromaRepository:
         repo._collection.count.return_value = 10
 
         assert repo.count() == 10
+
+    def test_find_ids_older_than(self):
+        from vectordb.chroma_repo import ChromaRepository
+
+        repo = ChromaRepository()
+        repo._loaded = True
+        repo._collection = MagicMock()
+        repo._collection.get.return_value = {"ids": ["old-1", "old-2"]}
+
+        ids = repo._find_ids_older_than("2026-04-01T00:00:00")
+
+        assert ids == ["old-1", "old-2"]
+        call_args = repo._collection.get.call_args
+        where = call_args[1]["where"]
+        assert "published_at_ts" in where
+        assert "$lt" in where["published_at_ts"]
+
+    def test_find_ids_older_than_empty(self):
+        from vectordb.chroma_repo import ChromaRepository
+
+        repo = ChromaRepository()
+        repo._loaded = True
+        repo._collection = MagicMock()
+        repo._collection.get.return_value = {"ids": []}
+
+        ids = repo._find_ids_older_than("2026-04-01T00:00:00")
+
+        assert ids == []
 
 
 # ── MilvusLiteRepository (skip — pymilvus 설치 필요) ─────

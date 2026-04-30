@@ -32,7 +32,7 @@ class AnthropicScorer(AbstractScorer):
             self._client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
             logger.info("[%s] client initialized — model=%s", self.name, self._model)
 
-    def _call_llm(self, system: str, user: str) -> str:
+    def _call_llm(self, system: str, user: str, *, json_mode: bool = True) -> str:
         self._ensure_client()
         response = self._client.messages.create(
             model=self._model,

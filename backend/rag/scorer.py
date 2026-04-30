@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 
@@ -141,7 +142,7 @@ class AbstractScorer(ABC):
         ...
 
     @abstractmethod
-    def _call_llm(self, system: str, user: str) -> str:
+    def _call_llm(self, system: str, user: str, *, json_mode: bool = True) -> str:
         ...
 
     def score(
@@ -161,7 +162,10 @@ class AbstractScorer(ABC):
         )
         logger.debug("[%s] 프롬프트:\n%s", self.name, user_prompt)
 
+        t0 = time.monotonic()
         raw_response = self._call_llm(SYSTEM_PROMPT, user_prompt)
+        elapsed = time.monotonic() - t0
+        logger.info("[%s] LLM 응답 수신 — %.1f초", self.name, elapsed)
         logger.debug("[%s] LLM 응답:\n%s", self.name, raw_response)
 
         try:

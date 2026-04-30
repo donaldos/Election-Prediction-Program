@@ -56,6 +56,8 @@ class IngestionPipeline:
             logger.info("수집된 기사가 없습니다. 파이프라인 종료.")
             return
 
+        articles = self._tag(articles)
+
         self._save_jsonl(
             items=articles,
             path=DATA_DIR / f"articles_{self._timestamp}.jsonl",
@@ -97,6 +99,10 @@ class IngestionPipeline:
             logger.info("--skip-store 지정 — VectorDB 저장 생략")
         else:
             stored = self._store(embedded)
+
+        purge_days = self._config.get("rag", {}).get("purge_days")
+        if purge_days and not skip_store:
+            self._purge(purge_days)
 
         logger.info("=" * 50)
         logger.info(
@@ -160,6 +166,22 @@ class IngestionPipeline:
             lookback_days=params.get("lookback_days", 2),
         )
         return scraper.scrape(keywords=keywords, date_from=date_from, date_to=date_to)
+
+    # ── tag ──────────────────────────────────────────────
+
+    def _tag(self, articles: list[RawArticle]) -> list[RawArticle]:
+        from ingestion.tagger import tag_articles
+
+        districts = self._config.get("districts", [])
+        if not districts:
+            logger.warning("config.yaml에 districts가 없습니다. 태깅 생략.")
+            return articles
+
+        logger.info("=" * 50)
+        logger.info("자동 태깅 시작")
+        logger.info("=" * 50)
+
+        return tag_articles(articles, districts)
 
     # ── chunk ────────────────────────────────────────────
 
@@ -231,6 +253,23 @@ class IngestionPipeline:
 
         logger.info("VectorDB 저장 완료 — %d개 벡터 저장, 총 %d개", count, repo.count())
         return count
+
+    # ── purge ────────────────────────────────────────────
+
+    def _purge(self, days: int) -> None:
+        import vectordb  # noqa: F401
+        from vectordb.base import VectorRepositoryRegistry
+
+        cfg = self._config.get("vectordb", {})
+        repo_type = cfg.get("type", "chroma")
+        params = cfg.get("params", {})
+        collection = cfg.get("collection", "election_chunks")
+
+        repo = VectorRepositoryRegistry.create(repo_type, collection=collection, **params)
+        repo.load()
+
+        deleted = repo.delete_older_than(days)
+        logger.info("만료 정리 — %d일 이전 벡터 %d개 삭제", days, deleted)
 
     # ── 공통 유틸 ────────────────────────────────────────
 

@@ -2,7 +2,7 @@
 
 2026년 6월 3일 재보궐선거(평택을, 부산북구갑) 판세를 실시간 분석하는 웹 서비스.
 
-뉴스 자동 크롤링 → 텍스트 청킹 → 벡터 임베딩 → RAG 기반 판세 판정 → 대시보드 시각화
+뉴스 자동 크롤링 → 텍스트 청킹 → 벡터 임베딩 → VectorDB 저장 → RAG 기반 판세 판정 → 대시보드 시각화
 
 ---
 
@@ -12,10 +12,12 @@
 |--------|------|
 | 백엔드 | Python 3.11+, FastAPI, APScheduler |
 | 임베딩 | OpenAI text-embedding-3-small (기본), BAAI/bge-m3, KoSimCSE |
-| Vector DB | Qdrant (운영), ChromaDB (로컬) |
-| RAG | LangChain |
+| Vector DB | ChromaDB (로컬 개발, 기본), Qdrant (운영) |
+| RAG | 자체 구현 (Retriever → Reranker → Scorer) |
+| LLM 판정 | OpenAI GPT-4o (기본), Anthropic Claude (대안) |
 | 프론트엔드 | Next.js 14, TypeScript, Recharts |
 | 인프라 | Docker Compose |
+| 패키지 관리 | uv + pyproject.toml |
 
 ---
 
@@ -29,62 +31,113 @@ election_expectation/
 │
 ├── backend/
 │   ├── pyproject.toml
-│   ├── requirements.txt
+│   ├── .env                         # 비밀값 (git 제외, OPENAI_API_KEY 등)
 │   │
 │   ├── config/
-│   │   └── config.yaml             # 크롤링 스케줄·선거구·후보·컴포넌트 설정
+│   │   └── config.yaml              # 크롤링 스케줄·선거구·후보·컴포넌트·RAG 설정
 │   │
 │   ├── data/                        # 수집 결과 저장
-│   │   ├── scraped_urls.jsonl       # 수집된 URL 기록 (중복 방지)
-│   │   ├── articles_YYYY-MM-DD_HHMMSS.jsonl  # 수집 기사
-│   │   ├── chunks_YYYY-MM-DD_HHMMSS.jsonl    # 청킹 결과
-│   │   └── embeddings_YYYY-MM-DD_HHMMSS.jsonl # 임베딩 결과
+│   │   ├── scraped_urls.jsonl       # 수집된 URL 기록 (중복 방지, 영속 누적)
+│   │   ├── articles_YYYY-MM-DD_HHMMSS.jsonl
+│   │   ├── chunks_YYYY-MM-DD_HHMMSS.jsonl
+│   │   └── embeddings_YYYY-MM-DD_HHMMSS.jsonl
 │   │
-│   ├── ingestion/
-│   │   ├── pipeline.py              # 파이프라인 오케스트레이터 (scrape→chunk→embed)
-│   │   ├── base_registry.py         # Strategy + Registry 패턴 (범용)
+│   ├── ingestion/                   # 수집 파이프라인 (scrape→chunk→embed→store)
+│   │   ├── pipeline.py
+│   │   ├── base_registry.py
 │   │   ├── scraper/
-│   │   │   ├── base.py              # AbstractScraper ABC
-│   │   │   ├── naver.py             # NaverNewsScraper (검색 HTML 파싱)
-│   │   │   ├── political.py         # PoliticalNewsScraper (RSS 파싱)
-│   │   │   ├── url_store.py         # 수집 URL 영속 저장소
-│   │   │   └── run.py               # 수동 실행 스크립트
+│   │   │   ├── base.py, naver.py, political.py, url_store.py, run.py
 │   │   ├── chunker/
-│   │   │   ├── base.py              # AbstractChunker ABC + ChunkerRegistry
-│   │   │   ├── korean_paragraph.py  # KoreanParagraphChunker (문단 기반, 기본값)
-│   │   │   ├── sentence.py          # SentenceChunker (kss 문장 분리)
-│   │   │   ├── token.py             # TokenChunker (tiktoken 토큰 기준)
-│   │   │   ├── semantic.py          # SemanticChunker (임베딩 유사도 경계 감지)
-│   │   │   └── recursive.py         # RecursiveChunker (재귀적 구분자 분리)
+│   │   │   ├── base.py, korean_paragraph.py, sentence.py, token.py, semantic.py, recursive.py
 │   │   └── embedder/
-│   │       ├── base.py              # AbstractEmbedder ABC + EmbedderRegistry
-│   │       ├── openai_embedder.py   # OpenAIEmbedder (API 기반, 기본값)
-│   │       ├── bge.py               # BGEM3Embedder (로컬 추론, 1024차원)
-│   │       └── ko_simcse.py         # KoSimCSEEmbedder (한국어 특화, 768차원)
+│   │       ├── base.py, openai_embedder.py, bge.py, ko_simcse.py
 │   │
-│   ├── vectordb/
-│   │   ├── base.py                  # AbstractVectorRepository + VectorRepositoryRegistry
-│   │   ├── qdrant_repo.py           # QdrantRepository (Docker, 운영)
-│   │   ├── chroma_repo.py           # ChromaRepository (로컬 내장, 개발)
-│   │   ├── milvus_repo.py           # MilvusLiteRepository (SQLite 기반)
-│   │   ├── lancedb_repo.py          # LanceDBRepository (파일 기반)
-│   │   ├── weaviate_repo.py         # WeaviateRepository (Docker, GraphQL)
-│   │   └── pgvector_repo.py         # PgvectorRepository (PostgreSQL 확장)
+│   ├── vectordb/                    # Vector DB 추상화 (6종)
+│   │   ├── base.py, qdrant_repo.py, chroma_repo.py, milvus_repo.py
+│   │   ├── lancedb_repo.py, weaviate_repo.py, pgvector_repo.py
 │   │
-│   ├── models/
-│   │   ├── article.py               # RawArticle, Article
-│   │   └── chunk.py                 # Chunk, ChunkWithEmbedding
+│   ├── rag/                         # 판정 엔진 (retrieve→rerank→score)
+│   │   ├── pipeline.py, retriever.py, reranker.py, scorer.py
+│   │   ├── openai_scorer.py, anthropic_scorer.py
+│   │
+│   ├── models/                      # 도메인 Pydantic 모델
+│   │   ├── article.py, chunk.py, score.py
 │   │
 │   └── tests/
-│       └── ingestion/
-│           ├── test_scraper.py      # 33개 테스트 케이스
-│           ├── test_chunker.py      # 27개 테스트 케이스
-│           ├── test_embedder.py     # 16개 테스트 케이스
-│           └── test_pipeline.py     # 13개 테스트 케이스
-│       └── vectordb/
-│           └── test_repository.py   # 33개 테스트 케이스
+│       ├── ingestion/               # 89개 (scraper 33 + chunker 27 + embedder 16 + pipeline 13)
+│       ├── rag/                     # 41개 (retriever 15 + reranker 9 + scorer 17)
+│       └── vectordb/               # 38개
 │
 └── frontend/                        # (예정)
+```
+
+---
+
+## VectorDB 저장 전략
+
+파이프라인은 매번 수집할 때마다 기존 VectorDB에 **누적 업데이트(upsert)** 합니다.
+
+### 왜 매번 새로 만들지 않는가?
+
+| | 1안: 매번 신규 생성 | **2안: 기존 DB 업데이트 (채택)** |
+|--|--|--|
+| 방식 | 컬렉션 삭제 후 재생성 | 기존 컬렉션에 upsert |
+| 장점 | 충돌 없음 | 과거 기사 흐름 보존 |
+| 단점 | 과거 기사 소실, 매번 전체 임베딩 비용 | 중복/노이즈 관리 필요 |
+
+선거 판세 분석은 **시간에 따른 여론 흐름**이 중요하므로 과거 데이터를 유지하는 2안을 채택하되, 아래 세 가지 안전장치로 충돌을 방지합니다.
+
+### 안전장치
+
+#### (a) 결정적 ID — 중복 벡터 원천 차단
+
+`ChunkWithEmbedding`의 ID를 `sha256(article_url + chunk_index)`로 생성합니다. 같은 기사의 같은 청크는 항상 동일한 ID를 가지므로, upsert 시 기존 벡터를 **덮어쓰기(갱신)** 합니다.
+
+```python
+# article_url + chunk_index → 결정적 해시
+id = sha256("https://example.com/news/123::chunk::0")[:16]
+```
+
+파이프라인을 여러 번 돌려도 중복이 발생하지 않습니다.
+
+#### (b) 시간 필터 — RAG 검색 시 최근 N일 기사만 사용
+
+Retriever가 검색 결과를 `published_at` 기준으로 후처리 필터링합니다. 오래된 기사("A후보 출마 선언" 등)가 최신 판세 분석에 노이즈로 작용하는 것을 방지합니다.
+
+```yaml
+rag:
+  retriever:
+    lookback_days: 14    # 최근 14일 기사만 사용 (null이면 전체)
+```
+
+```bash
+# CLI에서 오버라이드 가능
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --lookback-days 7
+```
+
+#### (c) 만료 정리 — 오래된 벡터 주기적 삭제
+
+설정된 일수 이전의 벡터를 VectorDB에서 물리적으로 삭제합니다. 수집 파이프라인 완료 후 자동 실행되며, RAG 파이프라인에서도 수동 실행할 수 있습니다.
+
+```yaml
+rag:
+  purge_days: 60         # 60일 이전 벡터 삭제 (null이면 비활성)
+```
+
+```bash
+# 수동 삭제
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
+```
+
+### 데이터 흐름 요약
+
+```
+수집(scrape)
+  ├── URL 중복 방지: scraped_urls.jsonl (영속 누적)
+  ├── JSONL: 매번 타임스탬프 파일 신규 생성 (이력 보관)
+  └── VectorDB: 기존 컬렉션에 upsert (결정적 ID로 중복 방지)
+       ├── 검색 시: lookback_days로 최근 기사만 사용
+       └── 정리 시: purge_days 이전 벡터 자동 삭제
 ```
 
 ---
@@ -95,15 +148,21 @@ election_expectation/
 
 ```bash
 cd backend
-python -m venv env
-source env/bin/activate
-pip install -r requirements.txt
+uv sync
 ```
 
-### 2. 파이프라인 실행
+### 2. API 키 설정
+
+`backend/.env` 파일에 API 키를 설정합니다:
+
+```
+OPENAI_API_KEY=sk-proj-...
+```
+
+### 3. 수집 파이프라인 실행
 
 ```bash
-# 전체 파이프라인 (scrape → chunk → embed)
+# 전체 파이프라인 (scrape → chunk → embed → store)
 PYTHONPATH=. python -m ingestion.pipeline
 
 # 네이버만 수집
@@ -122,34 +181,48 @@ PYTHONPATH=. python -m ingestion.pipeline --skip-store
 PYTHONPATH=. python -m ingestion.pipeline --skip-chunk
 ```
 
-### 3. 스크레이퍼 단독 실행 (디버깅용)
+### 4. RAG 판정 파이프라인 실행
+
+```bash
+# 평택을 판정
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b
+
+# 부산북구갑 판정
+PYTHONPATH=. python -m rag.pipeline --district busan_bukgu_gap
+
+# 검색 수 조정
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --top-k 10
+
+# 최근 7일 기사만 사용
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --lookback-days 7
+
+# 검색 결과만 확인 (LLM 판정 생략)
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --skip-score
+
+# 30일 이전 벡터 삭제 후 판정
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
+```
+
+### 5. 스크레이퍼 단독 실행 (디버깅용)
 
 ```bash
 PYTHONPATH=. python -m ingestion.scraper.run
-PYTHONPATH=. python -m ingestion.scraper.run --scraper naver
-PYTHONPATH=. python -m ingestion.scraper.run --days 5
+PYTHONPATH=. python -m ingestion.scraper.run --scraper naver --days 5
 ```
 
-### 4. 테스트 실행
+### 6. 테스트 실행
 
 ```bash
-# 전체 테스트
+# 전체 테스트 (154개 passed, 14개 skipped)
 PYTHONPATH=. pytest tests/ -v
 
-# 스크레이퍼 테스트만
+# 모듈별
 PYTHONPATH=. pytest tests/ingestion/test_scraper.py -v
-
-# 청커 테스트만
 PYTHONPATH=. pytest tests/ingestion/test_chunker.py -v
-
-# 임베더 테스트만
 PYTHONPATH=. pytest tests/ingestion/test_embedder.py -v
-
-# 파이프라인 테스트만
 PYTHONPATH=. pytest tests/ingestion/test_pipeline.py -v
-
-# VectorDB 테스트만
 PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
+PYTHONPATH=. pytest tests/rag/ -v
 ```
 
 ---
@@ -171,16 +244,8 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
 |------|------|------|
 | URL 기록 | `data/scraped_urls.jsonl` | 중복 수집 방지 (영속) |
 | 기사 본문 | `data/articles_YYYY-MM-DD_HHMMSS.jsonl` | 일자별 수집 기사 전문 |
-
-**URL 기록 형식 (JSONL):**
-```json
-{"url": "https://...", "source": "naver_news", "title": "기사 제목", "scraped_at": "2026-04-28T15:30:00"}
-```
-
-**기사 본문 형식 (JSONL):**
-```json
-{"url": "https://...", "source": "naver_news", "title": "기사 제목", "body": "본문...", "published_at": "2026-04-28T09:00:00", "matched_keywords": ["평택을"]}
-```
+| 청크 | `data/chunks_YYYY-MM-DD_HHMMSS.jsonl` | 청킹 결과 |
+| 임베딩 | `data/embeddings_YYYY-MM-DD_HHMMSS.jsonl` | 임베딩 결과 |
 
 ---
 
@@ -192,6 +257,7 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
 - **districts**: 선거구별 후보 및 검색 키워드
 - **scrapers**: 스크레이퍼별 설정 (max_articles, delay, lookback_days)
 - **chunker / embedder / vectordb**: 파이프라인 컴포넌트 설정
+- **rag**: 검색(top_k, lookback_days), 재정렬(min_score), 판정(provider, model), 만료 정리(purge_days)
 
 ### 후보 명단 (2026년 4월 기준)
 
@@ -199,38 +265,9 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
 
 **부산북구갑**: 하정우(더불어민주당), 한동훈(무소속), 박민식(국민의힘)
 
-```yaml
-scrapers:
-  naver:
-    type: naver
-    params:
-      max_articles_per_run: 100
-      request_delay_sec: 1.5
-      lookback_days: 2          # 오늘 기준 N일 전부터 검색
-```
-
----
-
-## 네이버 셀렉터 (2026년 4월 기준)
-
-네이버 검색 결과는 SDS 디자인 시스템으로 전환되어 `data-heatmap-target` 속성 기반 셀렉터를 사용합니다.
-수집 결과가 0건이면 네이버 HTML 구조가 또 변경되었을 수 있으니, 실제 페이지를 확인하고 `naver.py` 상단 셀렉터 상수를 업데이트하세요.
-
-```python
-SEL_ARTICLE_CONTAINER = 'div[class*="qhLRRX"]'          # 기사 컨테이너
-SEL_TITLE             = 'a[data-heatmap-target=".tit"]'  # 제목 + URL
-SEL_SUMMARY           = 'a[data-heatmap-target=".body"]' # 본문 요약
-SEL_PRESS             = 'a[data-heatmap-target=".prof"] span'  # 언론사
-SEL_DATE              = 'span.sds-comps-text-ellipsis-1' # 날짜
-```
-
-날짜 형식: `"2026.05.01."`, `"5분 전"`, `"2시간 전"`, `"1일 전"` 모두 파싱 지원.
-
 ---
 
 ## 청커 (Chunker)
-
-Scraper가 수집한 기사 본문을 Chunk 단위로 분할합니다. `config.yaml`의 `chunker.type` 값으로 전환합니다.
 
 | 청커 | config.yaml 키 | 외부 라이브러리 | 용도 |
 |------|----------------|----------------|------|
@@ -240,29 +277,9 @@ Scraper가 수집한 기사 본문을 Chunk 단위로 분할합니다. `config.y
 | SemanticChunker | `semantic` | `sentence-transformers` | 긴 기사, 주제 전환 감지 |
 | RecursiveChunker | `recursive` | 없음 | 구분자 커스터마이징 |
 
-```yaml
-chunker:
-  type: korean_paragraph       # 5개 중 선택
-  params:
-    chunk_size: 400
-    overlap: 50
-```
-
-### 청커 로깅
-
-`AbstractChunker.chunk()`에서 공통 로깅을 자동 처리합니다.
-
-| 레벨 | 내용 |
-|------|------|
-| `WARNING` | 빈 텍스트 입력 시 스킵 |
-| `INFO` | 청킹 시작 (입력 글자수, 기사 제목), 청킹 완료 (청크 수, 평균/최소/최대 글자수) |
-| `DEBUG` | 개별 청크별 인덱스, 글자수, 텍스트 미리보기 |
-
 ---
 
 ## 임베더 (Embedder)
-
-Chunker가 분할한 Chunk를 벡터로 변환합니다. `config.yaml`의 `embedder.type` 값으로 전환합니다.
 
 | 임베더 | config.yaml 키 | 외부 라이브러리 | 차원 | 특징 |
 |--------|----------------|----------------|------|------|
@@ -270,58 +287,49 @@ Chunker가 분할한 Chunk를 벡터로 변환합니다. `config.yaml`의 `embed
 | BGEM3Embedder | `bge_m3` | `FlagEmbedding` | 1024 | 로컬 추론, ~2GB 모델 |
 | KoSimCSEEmbedder | `ko_simcse` | `sentence-transformers` | 768 | 한국어 특화, ~500MB 모델 |
 
-```yaml
-embedder:
-  type: openai                      # openai | bge_m3 | ko_simcse
-  params:
-    model: text-embedding-3-small   # text-embedding-3-small | text-embedding-3-large | text-embedding-ada-002
-    dimensions: 1536
-    batch_size: 100
-```
-
-### API 키 설정
-
-OpenAI 임베더 사용 시 `backend/.env` 파일에 API 키를 설정합니다:
-
-```
-OPENAI_API_KEY=sk-proj-...
-```
-
-### 임베더 로깅
-
-`AbstractEmbedder.embed()`에서 공통 로깅을 자동 처리합니다.
-
-| 레벨 | 내용 |
-|------|------|
-| `WARNING` | 빈 청크 리스트 입력 시 스킵 |
-| `INFO` | 임베딩 시작 (청크 수), 임베딩 완료 (벡터 수, 차원) |
-| `INFO` | 모델 로드 완료 (구현체 `load()`) |
-| `DEBUG` | 배치별 API 호출/로컬 추론 진행 상황 (구현체 `_do_embed()`) |
-
 ---
 
 ## VectorDB
 
-임베딩된 벡터를 저장·검색합니다. `config.yaml`의 `vectordb.type` 값으로 전환합니다.
+| VectorDB | config.yaml 키 | 인프라 | 특징 |
+|----------|----------------|--------|------|
+| ChromaRepository | `chroma` | 없음 (로컬 파일) | **개발 환경 기본값**, 서버 불필요 |
+| QdrantRepository | `qdrant` | Docker | **운영 환경 권장**, 고성능 |
+| MilvusLiteRepository | `milvus_lite` | 없음 (SQLite) | pip만으로 사용 가능 |
+| LanceDBRepository | `lancedb` | 없음 (파일) | 가장 경량 |
+| WeaviateRepository | `weaviate` | Docker | GraphQL, 하이브리드 검색 |
+| PgvectorRepository | `pgvector` | PostgreSQL | 기존 PG 인프라 활용 |
 
-| VectorDB | config.yaml 키 | 외부 라이브러리 | 인프라 | 특징 |
-|----------|----------------|----------------|--------|------|
-| QdrantRepository | `qdrant` | `qdrant-client` | Docker | **운영 기본값**, 고성능 |
-| ChromaRepository | `chroma` | `chromadb` | 없음 (로컬 파일) | **개발 환경 권장**, 서버 불필요 |
-| MilvusLiteRepository | `milvus_lite` | `pymilvus` | 없음 (SQLite) | pip만으로 사용 가능 |
-| LanceDBRepository | `lancedb` | `lancedb` | 없음 (파일) | 가장 경량, 서버 불필요 |
-| WeaviateRepository | `weaviate` | `weaviate-client` | Docker | GraphQL, 하이브리드 검색 |
-| PgvectorRepository | `pgvector` | `psycopg`, `pgvector` | PostgreSQL | 기존 PG 인프라 활용 |
+---
 
-```yaml
-vectordb:
-  type: qdrant                      # qdrant | chroma | milvus_lite | lancedb | weaviate | pgvector
-  collection: election_chunks
-  params:
-    host: localhost
-    port: 6333
-    dimensions: 1536
+## RAG 판정 엔진
+
 ```
+retrieve (VectorDB 검색 + 시간 필터)
+  → rerank (임계값 필터링 + URL 중복 제거 + 점수 정렬)
+    → score (LLM 판정 + 승리 확률 정규화)
+```
+
+| 컴포넌트 | 설정 | 설명 |
+|---------|------|------|
+| Retriever | `top_k: 20`, `lookback_days: 14` | 후보당 검색 수, 최근 N일 필터, 필터 fallback |
+| Reranker | `min_score: 0.3`, `deduplicate: true` | 유사도 임계값, 동일 기사 중복 제거 |
+| Scorer | `provider: openai`, `model: gpt-4o` | LLM 판정 (openai / anthropic), `json_object` 모드 |
+
+### Scorer 구현체
+
+| Scorer | config 키 | 모델 | 특징 |
+|--------|----------|------|------|
+| OpenAIScorer | `openai` | GPT-4o | **기본값**, `json_object` 응답 모드 |
+| AnthropicScorer | `anthropic` | Claude | API 키 추가 시 전환 가능 |
+
+### RAG 로깅 정책
+
+| 컴포넌트 | WARNING | INFO | DEBUG |
+|---------|---------|------|-------|
+| Retriever | 검색 결과 변환 실패 | fallback 재검색, 시간 필터 적용, 검색 완료 건수 | 개별 결과 (id, score, title) |
+| Reranker | 빈 입력 | 재정렬 완료 (전후 건수) | 임계값/중복 제거 건수 |
+| Scorer | 0건 입력, 파싱 실패, 확률 합 ≠ 1.0 | LLM 요청/응답 (소요 시간), 판정 완료 | 프롬프트/응답 전문 |
 
 ---
 
@@ -329,55 +337,40 @@ vectordb:
 
 ### Strategy + Registry
 
-모든 교체 가능 컴포넌트는 동일한 패턴을 따릅니다:
+모든 교체 가능 컴포넌트(Scraper, Chunker, Embedder, VectorDB, Scorer)는 동일한 패턴을 따릅니다:
 
 ```
 ComponentRegistry.register("name")  →  config.yaml type 값과 매칭
 ComponentRegistry.create("name")    →  인스턴스 생성
 ```
 
-`config.yaml`의 `type` 값만 변경하면 구현체가 전환됩니다.
+`config.yaml`의 `type` 또는 `provider` 값만 변경하면 구현체가 전환됩니다.
 
 ### Lazy Import
 
-무거운 라이브러리(httpx, bs4, feedparser, kss, tiktoken, sentence-transformers, FlagEmbedding, openai 등)는 구현체 `load()` 메서드 내부에서 lazy import합니다. 사용하지 않는 구현체의 패키지가 미설치여도 다른 컴포넌트에 영향 없음.
+무거운 라이브러리(httpx, chromadb, qdrant_client, kss, FlagEmbedding, anthropic 등)는 구현체 `__init__` 또는 `load()` 내부에서 lazy import합니다. 사용하지 않는 구현체의 패키지가 미설치여도 다른 컴포넌트에 영향 없음.
+
+---
+
+## 네이버 셀렉터 (2026년 4월 기준)
+
+네이버 검색 결과는 SDS 디자인 시스템으로 전환되어 `data-heatmap-target` 속성 기반 셀렉터를 사용합니다.
+수집 결과가 0건이면 네이버 HTML 구조가 또 변경되었을 수 있으니, 실제 페이지를 확인하고 `naver.py` 상단 셀렉터 상수를 업데이트하세요.
 
 ---
 
 ## 현재 구현 상태
 
-- [x] 프로젝트 구조 설계
-- [x] Strategy + Registry 패턴 (`base_registry.py`)
-- [x] NaverNewsScraper 구현
-- [x] PoliticalNewsScraper 구현
-- [x] URL 영속 저장소 (`url_store.py`)
-- [x] 수동 실행 스크립트 (`run.py`)
-- [x] 테스트 코드 (33개 통과)
-- [x] lookback_days — date_from/date_to 생략 시 오늘 기준 N일 전 자동 설정
-- [x] 로깅 (INFO/WARNING/DEBUG 단계별)
-- [x] Chunker 구현 완료
-  - [x] KoreanParagraphChunker — 문단 기반 분할 + 오버랩 (기본값)
-  - [x] SentenceChunker — kss 문장 분리 기반
-  - [x] TokenChunker — tiktoken 토큰 기준 분할
-  - [x] SemanticChunker — 임베딩 유사도 경계 감지
-  - [x] RecursiveChunker — 재귀적 구분자 분리
-  - [x] Chunk, ChunkWithEmbedding 도메인 모델
-  - [x] 테스트 27개 (19개 통과, 8개 skip — 외부 라이브러리 미설치)
-- [x] Embedder 구현 완료
-  - [x] OpenAIEmbedder — API 기반 (기본값)
-  - [x] BGEM3Embedder — 로컬 추론 (1024차원)
-  - [x] KoSimCSEEmbedder — 한국어 특화 (768차원)
-  - [x] Template Method 패턴 (공통 로깅)
-  - [x] 테스트 16개 (14개 통과, 2개 skip — 로컬 모델 다운로드 필요)
-- [ ] VectorDB Repository 구현
+- [x] 프로젝트 구조 설계, Strategy + Registry 패턴
+- [x] Scraper 구현 완료 (NaverNewsScraper, PoliticalNewsScraper, URL 영속 저장소)
+- [x] Chunker 구현 완료 (5종: korean_paragraph, sentence, token, semantic, recursive)
+- [x] Embedder 구현 완료 (3종: openai, bge_m3, ko_simcse)
 - [x] IngestionPipeline 연결 (scrape→chunk→embed→store)
-  - [x] CLI 옵션: --scraper, --days, --skip-chunk, --skip-embed, --skip-store
-  - [x] 단계별 JSONL 저장 (articles, chunks, embeddings)
-  - [x] 테스트 13개 통과
-- [x] VectorDB Repository 구현 완료
-  - [x] Qdrant, ChromaDB, Milvus Lite, LanceDB, Weaviate, pgvector
-  - [x] config.yaml type 전환으로 교체 가능
-  - [x] 테스트 33개 (29개 통과, 4개 skip — 외부 서버 필요)
-- [ ] RAG 스코어링 엔진
+- [x] VectorDB Repository 구현 완료 (6종: qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector)
+- [x] VectorDB 안전장치 (결정적 ID, 시간 필터, 만료 정리)
+- [x] RAG 판정 엔진 구현 완료 (Retriever, Reranker, Scorer)
+- [x] OpenAIScorer (GPT-4o) + AnthropicScorer (Claude)
+- [x] 테스트 154개 passed, 14개 skipped
+- [ ] 기사 → 후보/선거구 자동 태깅
 - [ ] FastAPI 라우터
 - [ ] TypeScript 대시보드

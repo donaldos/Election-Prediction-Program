@@ -223,13 +223,15 @@ PYTHONPATH=. python -m ingestion.pipeline --skip-chunk          # 청킹·임베
 ### 2. RAG 판정 파이프라인
 
 ```
-retrieve → rerank → score (LLM 판정)
+retrieve (+ 시간 필터) → rerank → score (LLM 판정)
 ```
 
 ```bash
 PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b     # 평택을 판정
 PYTHONPATH=. python -m rag.pipeline --district busan_bukgu_gap  # 부산북구갑 판정
 PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --top-k 10
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --lookback-days 7  # 최근 7일만
+PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30    # 30일 이전 벡터 삭제
 PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --skip-score  # 검색만
 ```
 
@@ -291,6 +293,7 @@ vectordb:
 rag:
   retriever:
     top_k: 20
+    lookback_days: 14                # 최근 N일 기사만 검색 (null이면 전체)
   reranker:
     min_score: 0.3
     deduplicate: true
@@ -299,6 +302,7 @@ rag:
     model: gpt-4o
     temperature: 0.1
     max_tokens: 2000
+  purge_days: 60                    # N일 이전 벡터 자동 삭제 (null이면 비활성)
 ```
 
 ---
@@ -388,17 +392,20 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
   - [x] 테스트 13개 통과
 - [x] VectorRepository 구현 완료
   - [x] 6종 구현 (qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector)
-  - [x] ChromaDB 다중 필터 `$and` 래퍼 적용
-  - [x] 테스트 33개 (29 passed, 4 skipped)
+  - [x] ChromaDB 다중 필터 `$and` 래퍼 + `published_at_ts` 숫자 필터
+  - [x] 결정적 ID (`sha256(article_url + chunk_index)`) — 중복 벡터 원천 차단
+  - [x] 만료 정리 (`delete_older_than()`) — 오래된 벡터 물리 삭제
+  - [x] 테스트 38개 (33 + 만료 정리 5개, 29 passed, 4 skipped)
 - [x] RAG 판정 엔진 구현 완료
-  - [x] `Retriever` — VectorDB 검색 → SearchResult 변환, 필터 fallback
+  - [x] `Retriever` — VectorDB 검색 → SearchResult 변환, 필터 fallback, `lookback_days` 시간 필터
   - [x] `Reranker` — 유사도 임계값 필터링 + URL 중복 제거 + 점수 정렬
-  - [x] `Scorer` — Strategy + Registry 패턴, LLM 판정 + 확률 정규화
+  - [x] `Scorer` — Strategy + Registry 패턴, LLM 판정 + 확률 정규화 + 응답 시간 로깅
   - [x] `OpenAIScorer` — GPT-4o (json_object 모드)
   - [x] `AnthropicScorer` — Claude (API 키 추가 시 전환 가능)
-  - [x] RAG 파이프라인 CLI (`rag.pipeline`)
+  - [x] RAG 파이프라인 CLI (`rag.pipeline`) — `--lookback-days`, `--purge-days` 옵션
   - [x] `SearchResult`, `CandidateScore`, `DailyVerdict` 도메인 모델
-  - [x] 테스트 38개 (retriever 12 + reranker 9 + scorer 17)
+  - [x] 로깅 정책 — WARNING/INFO/DEBUG 3단계 (Retriever, Reranker, Scorer 각각)
+  - [x] 테스트 41개 (retriever 15 + reranker 9 + scorer 17)
 - [ ] 기사 → 후보/선거구 자동 태깅 (candidate, district_id 매칭)
 - [ ] FastAPI 라우터
 - [ ] TypeScript 대시보드
