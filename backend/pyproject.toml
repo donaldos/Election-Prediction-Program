@@ -1,0 +1,29 @@
+[project]
+name = "election-radar-backend"
+version = "0.1.0"
+description = "2026 재보궐선거 판세 분석 백엔드"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "feedparser>=6.0",
+    "pyyaml>=6.0",
+    "apscheduler>=3.10",
+    "openai>=2.32.0",
+    "chromadb>=1.5.8",
+    "anthropic>=0.97.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.14",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

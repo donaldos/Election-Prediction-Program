@@ -1,0 +1,143 @@
+# ============================================================
+# Election Radar - config.yaml
+# 2026-06-03 재보궐선거 (평택을, 부산북구갑)
+# ============================================================
+
+schedule:
+  cron: "0 7,12,18 * * *"            # 하루 3회 (07:00, 12:00, 18:00)
+
+# ------------------------------------------------------------
+# 선거구 및 후보 정의
+# ------------------------------------------------------------
+districts:
+  - id: pyeongtaek_b
+    name: 평택을
+    candidates:
+      - name: 김용남
+        party: 더불어민주당
+        keywords: ["김용남", "평택을", "평택 재보궐"]
+      - name: 조국
+        party: 조국혁신당
+        keywords: ["조국", "평택을", "평택 재보궐"]
+      - name: 유의동
+        party: 국민의힘
+        keywords: ["유의동", "평택을", "평택 재보궐"]
+      - name: 김재연
+        party: 진보당
+        keywords: ["김재연", "평택을", "평택 재보궐"]
+      - name: 황교안
+        party: 자유와혁신
+        keywords: ["황교안", "평택을", "평택 재보궐"]
+
+  - id: busan_bukgu_gap
+    name: 부산북구갑
+    candidates:
+      - name: 하정우
+        party: 더불어민주당
+        keywords: ["하정우", "부산북구갑", "부산 북구 재보궐"]
+      - name: 한동훈
+        party: 무소속
+        keywords: ["한동훈", "부산북구갑", "부산 북구 재보궐"]
+      - name: 박민식
+        party: 국민의힘
+        keywords: ["박민식", "부산북구갑", "부산 북구 재보궐"]
+
+# ------------------------------------------------------------
+# 스크레이퍼 설정
+# ------------------------------------------------------------
+scrapers:
+  naver:
+    type: naver
+    params:
+      max_articles_per_run: 100
+      request_delay_sec: 1.5          # robots.txt 준수
+      lookback_days: 2                # date_from 미지정 시 오늘 기준 N일 전부터 검색
+
+  political:
+    type: political
+    params:
+      urls:
+        - "https://www.ohmynews.com"
+        - "https://www.pressian.com"
+        - "https://www.mediatoday.co.kr"
+      max_articles_per_run: 100
+      request_delay_sec: 1.5
+      lookback_days: 2
+
+# ------------------------------------------------------------
+# 청킹 설정
+# ------------------------------------------------------------
+chunker:
+  type: korean_paragraph              # korean_paragraph | sentence | token | semantic | recursive
+  params:
+    chunk_size: 400
+    overlap: 50
+
+# ------------------------------------------------------------
+# 임베딩 설정
+# ------------------------------------------------------------
+embedder:
+  type: openai                        # openai | bge_m3 | ko_simcse
+  params:
+    # ── openai 전용 ──
+    model: text-embedding-3-small     # text-embedding-3-small | text-embedding-3-large | text-embedding-ada-002
+    dimensions: 1536                  # small=1536, large=3072 (ada는 이 옵션 미지원)
+    batch_size: 100                   # OpenAI API 최대 2048, 권장 100
+
+    # ── bge_m3 전용 (type: bge_m3 전환 시) ──
+    # model_name: "BAAI/bge-m3"       # HuggingFace 모델 (로컬 실행, ~2GB)
+    # batch_size: 32
+
+    # ── ko_simcse 전용 (type: ko_simcse 전환 시) ──
+    # model_name: "BM-K/KoSimCSE-roberta"  # 한국어 특화 (로컬 실행, ~500MB)
+    # batch_size: 32
+
+# ------------------------------------------------------------
+# Vector DB 설정
+# ------------------------------------------------------------
+vectordb:
+  type: chroma                        # qdrant | chroma | milvus_lite | lancedb | weaviate | pgvector
+  collection: election_chunks
+  params:
+    # ── chroma 전용 (type: chroma) ──
+    persist_dir: .chroma
+
+    # ── qdrant 전용 (type: qdrant 전환 시, Docker 필요) ──
+    # host: localhost
+    # port: 6333
+    # dimensions: 1536
+
+    # ── milvus_lite 전용 (type: milvus_lite 전환 시) ──
+    # db_path: ./milvus_lite.db
+    # dimensions: 1536
+
+    # ── lancedb 전용 (type: lancedb 전환 시) ──
+    # db_path: ./lancedb_data
+    # dimensions: 1536
+
+    # ── weaviate 전용 (type: weaviate 전환 시, Docker 필요) ──
+    # host: localhost
+    # port: 8080
+    # grpc_port: 50051
+    # dimensions: 1536
+
+    # ── pgvector 전용 (type: pgvector 전환 시, PostgreSQL 필요) ──
+    # dsn: "postgresql://localhost:5432/election_radar"
+    # dimensions: 1536
+
+# ------------------------------------------------------------
+# RAG 판정 엔진 설정
+# ------------------------------------------------------------
+rag:
+  retriever:
+    top_k: 20                          # 후보당 검색 수
+
+  reranker:
+    min_score: 0.3                     # 유사도 임계값
+    deduplicate: true                  # 동일 기사 중복 제거
+
+  scorer:
+    provider: openai                   # openai | anthropic
+    model: gpt-4o
+    temperature: 0.1                   # 판정 일관성을 위해 낮은 값
+    max_tokens: 2000
