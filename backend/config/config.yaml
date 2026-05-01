@@ -60,6 +60,8 @@ scrapers:
         - "https://www.ohmynews.com"
         - "https://www.pressian.com"
         - "https://www.mediatoday.co.kr"
+        - "https://www.chosun.com/arc/outboundfeeds/rss/category/politics/?outputType=xml"
+        - "https://rss.donga.com/politics.xml"
       max_articles_per_run: 100
       request_delay_sec: 1.5
       lookback_days: 2
