@@ -15,9 +15,9 @@
 | Vector DB | ChromaDB (로컬 개발, 기본), Qdrant (운영) |
 | RAG | 자체 구현 (Retriever → Reranker → Scorer) |
 | LLM 판정 | OpenAI GPT-4o (기본), Anthropic Claude (대안) |
-| 프론트엔드 | Next.js 14, TypeScript, Recharts |
-| 인프라 | Docker Compose |
-| 패키지 관리 | uv + pyproject.toml |
+| 프론트엔드 | Next.js 16, TypeScript, Recharts |
+| 인프라 | Docker Compose (멀티스테이지 빌드) |
+| 패키지 관리 | uv + pyproject.toml (백엔드), npm (프론트엔드) |
 
 ---
 
@@ -27,9 +27,12 @@
 election_expectation/
 ├── README.md
 ├── CLAUDE.md
-├── docker-compose.yml
+├── OVERVIEW.md                      # 프로젝트 의의·역할·중요성
+├── docker-compose.yml               # 백엔드 + 프론트엔드 통합 실행
 │
 ├── backend/
+│   ├── Dockerfile                   # Python 3.11 + uv 기반 이미지
+│   ├── .dockerignore
 │   ├── pyproject.toml
 │   ├── .env                         # 비밀값 (git 제외, OPENAI_API_KEY 등)
 │   │
@@ -89,6 +92,9 @@ election_expectation/
 │       └── vectordb/               # 38개
 │
 └── frontend/                        # Next.js 대시보드
+    ├── Dockerfile                   # Node 20 멀티스테이지 빌드 (standalone)
+    ├── .dockerignore
+    ├── next.config.ts               # output: "standalone" (Docker 최적화)
     └── src/
         ├── app/                     # 메인 대시보드 + 관리자 페이지
         ├── components/              # VerdictCard, WinProbChart, DistrictSelector
@@ -169,7 +175,40 @@ PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
 
 ## 빠른 시작
 
-### 1. 환경 세팅
+### 방법 A: Docker Compose (권장)
+
+가장 간단한 실행 방법입니다. Docker와 Docker Compose만 설치되어 있으면 됩니다.
+
+```bash
+# 1. API 키 설정
+echo "OPENAI_API_KEY=sk-proj-..." > backend/.env
+
+# 2. 빌드 및 실행
+docker compose up --build
+```
+
+- 대시보드: http://localhost:3000
+- 관리자 페이지: http://localhost:3000/admin
+- API 문서 (Swagger UI): http://localhost:8000/docs
+- Health check: http://localhost:8000/health
+
+```bash
+# 백그라운드 실행
+docker compose up --build -d
+
+# 로그 확인
+docker compose logs -f backend
+docker compose logs -f frontend
+
+# 종료
+docker compose down
+```
+
+수집 데이터(`data/`)와 VectorDB(`.chroma/`)는 Docker 볼륨에 영속 저장됩니다.
+
+### 방법 B: 로컬 직접 실행
+
+#### 1. 환경 세팅
 
 ```bash
 # 백엔드
@@ -181,7 +220,7 @@ cd frontend
 npm install
 ```
 
-### 2. API 키 설정
+#### 2. API 키 설정
 
 `backend/.env` 파일에 API 키를 설정합니다:
 
@@ -189,7 +228,7 @@ npm install
 OPENAI_API_KEY=sk-proj-...
 ```
 
-### 3. 수집 파이프라인 실행
+##### 3. 수집 파이프라인 실행
 
 ```bash
 # 전체 파이프라인 (scrape → tag → chunk → embed → store)
@@ -211,7 +250,7 @@ PYTHONPATH=. python -m ingestion.pipeline --skip-store
 PYTHONPATH=. python -m ingestion.pipeline --skip-chunk
 ```
 
-### 4. RAG 판정 파이프라인 실행
+#### 4. RAG 판정 파이프라인 실행
 
 ```bash
 # 평택을 판정
@@ -233,14 +272,14 @@ PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --skip-score
 PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
 ```
 
-### 5. 스크레이퍼 단독 실행 (디버깅용)
+#### 5. 스크레이퍼 단독 실행 (디버깅용)
 
 ```bash
 PYTHONPATH=. python -m ingestion.scraper.run
 PYTHONPATH=. python -m ingestion.scraper.run --scraper naver --days 5
 ```
 
-### 6. 서버 + 프론트엔드 실행
+#### 6. 서버 + 프론트엔드 실행
 
 백엔드와 프론트엔드를 **두 터미널에서 동시에** 실행해야 합니다.
 프론트엔드(`localhost:3000`)가 백엔드(`localhost:8000`) API를 호출하므로 백엔드가 먼저 실행되어 있어야 합니다.
@@ -268,7 +307,7 @@ npm run dev
 관리자 페이지에서 스크레이퍼 선택(전체/네이버/정치 매체) + 기간 입력 후 **"수집 실행"** 버튼으로 파이프라인을 수동 실행할 수 있습니다.
 기간을 비워두면 config.yaml의 `lookback_days` 기본값이 적용됩니다.
 
-### 7. 테스트 실행
+#### 7. 테스트 실행
 
 ```bash
 # 백엔드 전체 테스트 (215개 passed, 14개 skipped)
@@ -418,6 +457,49 @@ ComponentRegistry.create("name")    →  인스턴스 생성
 
 ---
 
+## Docker 구성
+
+### 구조
+
+| 파일 | 역할 |
+|------|------|
+| `docker-compose.yml` | backend + frontend 통합 실행 |
+| `backend/Dockerfile` | Python 3.11-slim + uv, FastAPI 서버 |
+| `frontend/Dockerfile` | Node 20-alpine 멀티스테이지 빌드 (deps → build → standalone) |
+
+### 환경변수
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `OPENAI_API_KEY` | (필수) | `backend/.env`에 설정 |
+| `CORS_ORIGINS` | `http://localhost:3000` | 허용할 프론트엔드 origin (콤마 구분) |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000/api/v1` | 프론트엔드가 호출할 백엔드 API 주소 |
+
+### 볼륨
+
+| 볼륨 | 컨테이너 경로 | 용도 |
+|------|---------------|------|
+| `backend-data` | `/app/data` | 수집 기사, 청크, 임베딩, 판정 결과 JSONL |
+| `backend-chroma` | `/app/.chroma` | ChromaDB 영속 저장 |
+
+### 운영 배포 시 변경 사항
+
+서버 도메인에 맞게 환경변수를 조정합니다:
+
+```yaml
+# docker-compose.yml
+services:
+  backend:
+    environment:
+      - CORS_ORIGINS=https://yourdomain.com
+  frontend:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: https://yourdomain.com/api/v1
+```
+
+---
+
 ## 관리자 API
 
 서버 실행: `cd backend && uv run uvicorn app.main:app --reload`
@@ -498,4 +580,5 @@ curl -X POST http://localhost:8000/api/v1/admin/vectordb/purge \
 - [x] APScheduler 연동 (cron 주기 자동 수집 + 판정)
 - [x] 테스트 215개 passed, 14개 skipped
 - [x] TypeScript 대시보드 (Next.js 16 + Recharts)
-- [x] CORS 미들웨어 (프론트엔드 → 백엔드 API 연동)
+- [x] CORS 미들웨어 (프론트엔드 → 백엔드 API 연동, `CORS_ORIGINS` 환경변수 지원)
+- [x] Docker 배포 (백엔드 Dockerfile + 프론트엔드 멀티스테이지 Dockerfile + docker-compose.yml)
