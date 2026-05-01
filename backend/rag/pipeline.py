@@ -288,6 +288,10 @@ def _run_verdict_mode(args, config: dict) -> None:
     scorer = _build_scorer(config)
     verdict = scorer.score(all_results, district)
 
+    from rag.verdict_store import VerdictStore
+    store = VerdictStore()
+    store.save(verdict)
+
     _print_verdict(verdict)
 
 

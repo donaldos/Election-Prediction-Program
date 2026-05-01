@@ -50,27 +50,32 @@ election-radar/
 │   ├── config/
 │   │   └── config.yaml              ← 크롤링 스케줄·선거구·후보·컴포넌트 타입·RAG 설정
 │   │
-│   ├── app/                         ← FastAPI 진입점 (미구현)
-│   │   ├── main.py
+│   ├── app/                         ← FastAPI 진입점
+│   │   ├── main.py                  ← FastAPI app + lifespan (APScheduler 자동 시작)
 │   │   ├── core/
-│   │   │   ├── dependencies.py      ← DI 컨테이너 (컴포넌트 싱글톤 관리)
-│   │   │   └── scheduler.py         ← APScheduler (크롤링 주기 실행)
+│   │   │   ├── dependencies.py      ← DI 컨테이너 (config 캐시, VectorDB 싱글톤)
+│   │   │   ├── pipeline_runner.py   ← 백그라운드 파이프라인 실행 관리 (스레드 기반)
+│   │   │   └── scheduler.py         ← APScheduler (cron 주기 자동 수집 + 판정)
 │   │   └── api/v1/
 │   │       ├── routes/
-│   │       │   ├── articles.py
-│   │       │   └── scores.py
+│   │       │   ├── admin.py         ← 관리자 API (파이프라인 실행, VectorDB 관리, 설정 변경)
+│   │       │   └── scores.py        ← 판세 결과 API (최신/이력/시계열 조회, 판정 실행)
 │   │       └── schemas/
-│   │           ├── article.py
-│   │           └── score.py
+│   │           ├── admin.py         ← 관리자 요청/응답 스키마
+│   │           └── score.py         ← 판세 결과 요청/응답 스키마
 │   │
 │   ├── data/                            ← 수집 결과 저장
 │   │   ├── scraped_urls.jsonl           ← URL 기록 (중복 방지, 영속 누적)
 │   │   ├── articles_YYYY-MM-DD_HHMMSS.jsonl    ← 수집 기사
 │   │   ├── chunks_YYYY-MM-DD_HHMMSS.jsonl      ← 청킹 결과
-│   │   └── embeddings_YYYY-MM-DD_HHMMSS.jsonl  ← 임베딩 결과
+│   │   ├── embeddings_YYYY-MM-DD_HHMMSS.jsonl  ← 임베딩 결과
+│   │   └── verdicts/                    ← 판정 결과 (선거구별 JSONL 누적)
+│   │       ├── pyeongtaek_b.jsonl
+│   │       └── busan_bukgu_gap.jsonl
 │   │
-│   ├── ingestion/                   ← 수집 파이프라인 (scrape→chunk→embed→store)
+│   ├── ingestion/                   ← 수집 파이프라인 (scrape→tag→chunk→embed→store)
 │   │   ├── pipeline.py              ← Orchestrator CLI
+│   │   ├── tagger.py                ← 기사 → 후보/선거구 자동 태깅 (키워드 매칭)
 │   │   ├── base_registry.py         ← 범용 ComponentRegistry[T]
 │   │   │
 │   │   ├── scraper/                 ← 뉴스 수집
@@ -109,7 +114,8 @@ election-radar/
 │   │   ├── reranker.py              ← Reranker (임계값 필터링 + 중복 제거 + 정렬)
 │   │   ├── scorer.py                ← AbstractScorer (ABC) + ScorerRegistry + 프롬프트 구성
 │   │   ├── openai_scorer.py         ← OpenAIScorer (GPT-4o, 기본값)
-│   │   └── anthropic_scorer.py      ← AnthropicScorer (Claude)
+│   │   ├── anthropic_scorer.py      ← AnthropicScorer (Claude)
+│   │   └── verdict_store.py         ← VerdictStore (판정 결과 JSONL 영속 저장/조회)
 │   │
 │   ├── models/                      ← 도메인 Pydantic 모델 (공유)
 │   │   ├── article.py               ← RawArticle, Article
@@ -125,15 +131,23 @@ election-radar/
 │       ├── rag/
 │       │   ├── test_retriever.py    ← 12개
 │       │   ├── test_reranker.py     ← 9개
-│       │   └── test_scorer.py       ← 17개
+│       │   ├── test_scorer.py       ← 17개
+│       │   └── test_verdict_store.py ← 11개
 │       └── vectordb/
 │           └── test_repository.py   ← 33개 (29 passed, 4 skipped)
 │
-├── frontend/                        ← (미구현)
+├── frontend/                        ← Next.js 대시보드
 │   └── src/
 │       ├── app/
+│       │   ├── page.tsx             ← 메인 대시보드 (선거구 선택 + 판세 + 차트)
+│       │   └── admin/page.tsx       ← 관리자 페이지 (파이프라인, VectorDB, RAG 설정)
 │       ├── components/
+│       │   ├── VerdictCard.tsx       ← 후보별 판정 결과 카드
+│       │   ├── WinProbChart.tsx      ← 승률 시계열 차트 (Recharts)
+│       │   └── DistrictSelector.tsx  ← 선거구 탭 선택
 │       └── lib/
+│           ├── api.ts               ← API 클라이언트 (fetch 래퍼)
+│           └── types.ts             ← TypeScript 타입 정의
 │
 └── .claude/                         ← Claude Code 컴포넌트별 스킬 가이드
     └── backend/
@@ -208,8 +222,10 @@ DailyVerdict       → (scorer 출력, API 응답 단위)
 ### 1. 수집 파이프라인 (ingestion)
 
 ```
-scrape → chunk → embed → store (VectorDB)
+scrape → tag → chunk → embed → store (VectorDB)
 ```
+
+- **tag**: 기사 제목+본문에서 config.yaml 후보 키워드를 매칭하여 `candidate`, `district_id` 자동 태깅
 
 ```bash
 PYTHONPATH=. python -m ingestion.pipeline                       # 전체
@@ -364,7 +380,7 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
 
 ## 알려진 제한 사항
 
-- **기사 메타데이터 미매칭**: 수집된 기사의 `candidate`, `district_id` 필드가 빈 문자열. 기사 본문 키워드 기반 후보/선거구 태깅 로직 미구현. Retriever에서 필터 검색 0건 시 필터 없이 재검색하는 fallback으로 우회 중.
+- **기사 메타데이터 태깅**: `ingestion/tagger.py`로 키워드 기반 자동 태깅 구현 완료. 다만 키워드 매칭 방식이므로, 키워드에 없는 별명/약칭 사용 시 미태깅될 수 있음. config.yaml의 `keywords` 목록을 확장하여 대응.
 - **네이버 셀렉터 변동**: 네이버 SDS 클래스명이 주기적으로 변경됨. `data-heatmap-target`과 `sds-comps-profile-info-*` 시맨틱 클래스 기반으로 2026-04-30 수정 완료. 수집 결과가 0건이면 HTML 구조 변경 가능성 확인 필요.
 
 ---
@@ -386,7 +402,12 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
   - [x] 3종 구현 (openai, bge_m3, ko_simcse)
   - [x] `embed_query()` 메서드 — 단일 텍스트 벡터 변환 (Retriever용)
   - [x] 테스트 16개 (14 passed, 2 skipped)
-- [x] IngestionPipeline 연결 (scrape→chunk→embed→store)
+- [x] 기사 → 후보/선거구 자동 태깅 구현 완료
+  - [x] `ingestion/tagger.py` — 키워드 매칭 기반 candidate/district_id 자동 태깅
+  - [x] 단일 후보 매칭 → candidate + district_id, 다수 후보 → district_id만, 비관련 → 미태깅
+  - [x] 수집 파이프라인에 scrape → **tag** → chunk 단계로 통합
+  - [x] 테스트 19개 통과
+- [x] IngestionPipeline 연결 (scrape→tag→chunk→embed→store)
   - [x] CLI: `--scraper`, `--days`, `--skip-chunk`, `--skip-embed`, `--skip-store`
   - [x] `load_dotenv()` 적용
   - [x] 테스트 13개 통과
@@ -405,7 +426,36 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
   - [x] RAG 파이프라인 CLI (`rag.pipeline`) — `--lookback-days`, `--purge-days` 옵션
   - [x] `SearchResult`, `CandidateScore`, `DailyVerdict` 도메인 모델
   - [x] 로깅 정책 — WARNING/INFO/DEBUG 3단계 (Retriever, Reranker, Scorer 각각)
-  - [x] 테스트 41개 (retriever 15 + reranker 9 + scorer 17)
-- [ ] 기사 → 후보/선거구 자동 태깅 (candidate, district_id 매칭)
-- [ ] FastAPI 라우터
-- [ ] TypeScript 대시보드
+  - [x] 테스트 52개 (retriever 15 + reranker 9 + scorer 17 + verdict_store 11)
+- [x] 판정 결과 영속 저장 구현 완료
+  - [x] `VerdictStore` — 선거구별 JSONL 파일로 판정 이력 누적 저장
+  - [x] `save()`, `load_all()`, `load_latest()`, `load_range()`, `list_districts()`, `count()`
+  - [x] RAG 파이프라인 CLI에서 판정 후 자동 저장
+- [x] FastAPI 관리자 API 구현 완료
+  - [x] `POST /api/v1/admin/pipeline/run` — 수집 파이프라인 백그라운드 실행
+  - [x] `POST /api/v1/admin/pipeline/rebuild` — VectorDB 전체 재구축
+  - [x] `GET /api/v1/admin/pipeline/status` — 파이프라인 실행 상태 조회
+  - [x] `GET /api/v1/admin/vectordb/stats` — VectorDB 통계 (저장 건수)
+  - [x] `POST /api/v1/admin/vectordb/purge` — 만료 벡터 수동 정리
+  - [x] `GET /api/v1/admin/config` — 전체 설정 조회
+  - [x] `GET/PATCH /api/v1/admin/config/rag` — RAG 설정 조회/변경
+  - [x] `GET /api/v1/admin/districts` — 선거구/후보 목록 조회
+  - [x] DI 컨테이너 (`dependencies.py`) — config 캐시, VectorDB 싱글톤
+  - [x] `PipelineRunner` — 스레드 기반 백그라운드 실행, 중복 실행 방지
+  - [x] 테스트 20개 통과
+- [x] 판세 결과 API 구현 완료
+  - [x] `GET /api/v1/scores/{district_id}/latest` — 최신 판정 결과
+  - [x] `GET /api/v1/scores/{district_id}/history` — 판정 이력 (날짜 필터, limit)
+  - [x] `GET /api/v1/scores/{district_id}/timeseries` — 시계열 차트 데이터
+  - [x] `POST /api/v1/scores/{district_id}/run` — 판정 실행 (관리자)
+  - [x] 테스트 6개 통과
+- [x] APScheduler 연동
+  - [x] `scheduler.py` — config.yaml `schedule.cron`에 따라 수집 + 판정 자동 실행
+  - [x] FastAPI lifespan으로 서버 시작/종료 시 스케줄러 자동 관리
+  - [x] 테스트 5개 통과
+- [x] TypeScript 대시보드 구현 완료
+  - [x] Next.js 16 + TypeScript + Tailwind CSS + Recharts
+  - [x] 메인 대시보드 — 선거구 선택, 최신 판정 결과, 승률 시계열 차트
+  - [x] 관리자 페이지 — 파이프라인 실행, VectorDB 관리, RAG 설정 변경
+  - [x] API 클라이언트 — fetch 기반 타입 안전 API 래퍼
+  - [x] 빌드 성공

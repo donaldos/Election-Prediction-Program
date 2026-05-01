@@ -36,14 +36,24 @@ election_expectation/
 │   ├── config/
 │   │   └── config.yaml              # 크롤링 스케줄·선거구·후보·컴포넌트·RAG 설정
 │   │
+│   ├── app/                         # FastAPI 서버
+│   │   ├── main.py                  # 진입점
+│   │   ├── core/
+│   │   │   ├── dependencies.py      # DI 컨테이너 (config, VectorDB)
+│   │   │   └── pipeline_runner.py   # 백그라운드 파이프라인 실행
+│   │   └── api/v1/
+│   │       ├── routes/admin.py      # 관리자 API
+│   │       └── schemas/admin.py     # 요청/응답 스키마
+│   │
 │   ├── data/                        # 수집 결과 저장
 │   │   ├── scraped_urls.jsonl       # 수집된 URL 기록 (중복 방지, 영속 누적)
 │   │   ├── articles_YYYY-MM-DD_HHMMSS.jsonl
 │   │   ├── chunks_YYYY-MM-DD_HHMMSS.jsonl
 │   │   └── embeddings_YYYY-MM-DD_HHMMSS.jsonl
 │   │
-│   ├── ingestion/                   # 수집 파이프라인 (scrape→chunk→embed→store)
+│   ├── ingestion/                   # 수집 파이프라인 (scrape→tag→chunk→embed→store)
 │   │   ├── pipeline.py
+│   │   ├── tagger.py                # 기사 → 후보/선거구 자동 태깅
 │   │   ├── base_registry.py
 │   │   ├── scraper/
 │   │   │   ├── base.py, naver.py, political.py, url_store.py, run.py
@@ -64,11 +74,16 @@ election_expectation/
 │   │   ├── article.py, chunk.py, score.py
 │   │
 │   └── tests/
-│       ├── ingestion/               # 89개 (scraper 33 + chunker 27 + embedder 16 + pipeline 13)
-│       ├── rag/                     # 41개 (retriever 15 + reranker 9 + scorer 17)
+│       ├── app/                     # 31개 (admin 20 + scores 6 + scheduler 5)
+│       ├── ingestion/               # 108개 (scraper 33 + tagger 19 + chunker 27 + embedder 16 + pipeline 13)
+│       ├── rag/                     # 52개 (retriever 15 + reranker 9 + scorer 17 + verdict_store 11)
 │       └── vectordb/               # 38개
 │
-└── frontend/                        # (예정)
+└── frontend/                        # Next.js 대시보드
+    └── src/
+        ├── app/                     # 메인 대시보드 + 관리자 페이지
+        ├── components/              # VerdictCard, WinProbChart, DistrictSelector
+        └── lib/                     # API 클라이언트, 타입 정의
 ```
 
 ---
@@ -132,8 +147,9 @@ PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
 ### 데이터 흐름 요약
 
 ```
-수집(scrape)
+수집(scrape) → 태깅(tag) → 청킹(chunk) → 임베딩(embed) → 저장(store)
   ├── URL 중복 방지: scraped_urls.jsonl (영속 누적)
+  ├── 자동 태깅: 기사 제목+본문 키워드 매칭 → candidate/district_id 자동 부여
   ├── JSONL: 매번 타임스탬프 파일 신규 생성 (이력 보관)
   └── VectorDB: 기존 컬렉션에 upsert (결정적 ID로 중복 방지)
        ├── 검색 시: lookback_days로 최근 기사만 사용
@@ -147,8 +163,13 @@ PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
 ### 1. 환경 세팅
 
 ```bash
+# 백엔드
 cd backend
 uv sync
+
+# 프론트엔드
+cd frontend
+npm install
 ```
 
 ### 2. API 키 설정
@@ -162,7 +183,7 @@ OPENAI_API_KEY=sk-proj-...
 ### 3. 수집 파이프라인 실행
 
 ```bash
-# 전체 파이프라인 (scrape → chunk → embed → store)
+# 전체 파이프라인 (scrape → tag → chunk → embed → store)
 PYTHONPATH=. python -m ingestion.pipeline
 
 # 네이버만 수집
@@ -210,10 +231,26 @@ PYTHONPATH=. python -m ingestion.scraper.run
 PYTHONPATH=. python -m ingestion.scraper.run --scraper naver --days 5
 ```
 
-### 6. 테스트 실행
+### 6. 서버 + 프론트엔드 실행
 
 ```bash
-# 전체 테스트 (154개 passed, 14개 skipped)
+# 백엔드 (터미널 1)
+cd backend
+uv run uvicorn app.main:app --reload
+# → http://localhost:8000/docs (Swagger UI)
+
+# 프론트엔드 (터미널 2)
+cd frontend
+npm run dev
+# → http://localhost:3000 (대시보드)
+# → http://localhost:3000/admin (관리자)
+```
+
+### 7. 테스트 실행
+
+```bash
+# 백엔드 전체 테스트 (215개 passed, 14개 skipped)
+cd backend
 PYTHONPATH=. pytest tests/ -v
 
 # 모듈별
@@ -359,18 +396,82 @@ ComponentRegistry.create("name")    →  인스턴스 생성
 
 ---
 
+## 관리자 API
+
+서버 실행: `cd backend && uv run uvicorn app.main:app --reload`
+
+Swagger UI: `http://localhost:8000/docs`
+
+### 엔드포인트
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `POST` | `/api/v1/admin/pipeline/run` | 수집 파이프라인 백그라운드 실행 (scraper, days 지정 가능) |
+| `POST` | `/api/v1/admin/pipeline/rebuild` | VectorDB 삭제 → 전체 파이프라인 재실행 |
+| `GET` | `/api/v1/admin/pipeline/status` | 현재 파이프라인 실행 상태 (running/completed/failed/idle) |
+| `GET` | `/api/v1/admin/vectordb/stats` | VectorDB 타입, 컬렉션명, 저장 건수 |
+| `POST` | `/api/v1/admin/vectordb/purge` | N일 이전 벡터 수동 삭제 |
+| `GET` | `/api/v1/admin/config` | 전체 config.yaml 설정 조회 |
+| `GET` | `/api/v1/admin/config/rag` | RAG 설정만 조회 |
+| `PATCH` | `/api/v1/admin/config/rag` | RAG 설정 변경 (lookback_days, top_k, scorer 등) |
+| `GET` | `/api/v1/admin/districts` | 선거구/후보 목록 |
+
+### 판세 결과 API
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `GET` | `/api/v1/scores/{district_id}/latest` | 최신 판정 결과 (후보별 verdict, 승률, 근거) |
+| `GET` | `/api/v1/scores/{district_id}/history` | 판정 이력 조회 (date_from, date_to, limit) |
+| `GET` | `/api/v1/scores/{district_id}/timeseries` | 시계열 차트용 데이터 (날짜별 후보 승률) |
+| `POST` | `/api/v1/scores/{district_id}/run` | 판정 실행 (LLM 호출 → 결과 저장) |
+
+### 자동 스케줄
+
+서버 시작 시 config.yaml의 `schedule.cron` 설정에 따라 APScheduler가 자동으로 수집 + 판정을 실행합니다.
+기본값: `0 7,12,18 * * *` (하루 3회)
+
+### 사용 예시
+
+```bash
+# 파이프라인 실행 (네이버만, 최근 5일)
+curl -X POST http://localhost:8000/api/v1/admin/pipeline/run \
+  -H "Content-Type: application/json" \
+  -d '{"scraper": "naver", "days": 5}'
+
+# 실행 상태 확인
+curl http://localhost:8000/api/v1/admin/pipeline/status
+
+# VectorDB 통계
+curl http://localhost:8000/api/v1/admin/vectordb/stats
+
+# RAG 설정 변경 (lookback_days → 7일, scorer → anthropic)
+curl -X PATCH http://localhost:8000/api/v1/admin/config/rag \
+  -H "Content-Type: application/json" \
+  -d '{"lookback_days": 7, "scorer_provider": "anthropic", "scorer_model": "claude-sonnet-4-6"}'
+
+# 만료 벡터 정리 (30일 이전)
+curl -X POST http://localhost:8000/api/v1/admin/vectordb/purge \
+  -H "Content-Type: application/json" \
+  -d '{"purge_days": 30}'
+```
+
+---
+
 ## 현재 구현 상태
 
 - [x] 프로젝트 구조 설계, Strategy + Registry 패턴
 - [x] Scraper 구현 완료 (NaverNewsScraper, PoliticalNewsScraper, URL 영속 저장소)
 - [x] Chunker 구현 완료 (5종: korean_paragraph, sentence, token, semantic, recursive)
 - [x] Embedder 구현 완료 (3종: openai, bge_m3, ko_simcse)
-- [x] IngestionPipeline 연결 (scrape→chunk→embed→store)
+- [x] 기사 → 후보/선거구 자동 태깅 (키워드 매칭 기반)
+- [x] IngestionPipeline 연결 (scrape→tag→chunk→embed→store)
 - [x] VectorDB Repository 구현 완료 (6종: qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector)
 - [x] VectorDB 안전장치 (결정적 ID, 시간 필터, 만료 정리)
 - [x] RAG 판정 엔진 구현 완료 (Retriever, Reranker, Scorer)
 - [x] OpenAIScorer (GPT-4o) + AnthropicScorer (Claude)
-- [x] 테스트 154개 passed, 14개 skipped
-- [ ] 기사 → 후보/선거구 자동 태깅
-- [ ] FastAPI 라우터
-- [ ] TypeScript 대시보드
+- [x] 판정 결과 영속 저장 (VerdictStore — 선거구별 JSONL 이력 누적)
+- [x] FastAPI 관리자 API (파이프라인 실행, VectorDB 관리, 설정 변경)
+- [x] 판세 결과 API (최신/이력/시계열 조회, 판정 실행)
+- [x] APScheduler 연동 (cron 주기 자동 수집 + 판정)
+- [x] 테스트 215개 passed, 14개 skipped
+- [x] TypeScript 대시보드 (Next.js 16 + Recharts)

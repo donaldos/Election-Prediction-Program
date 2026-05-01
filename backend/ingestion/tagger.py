@@ -115,6 +115,10 @@ def _match_article(
     if len(matched_candidates) == 1:
         candidate = matched_candidates[0]["name"]
     else:
-        candidate = ""
+        sorted_cands = sorted(matched_candidates, key=lambda c: c["total"], reverse=True)
+        if sorted_cands[0]["total"] > sorted_cands[1]["total"]:
+            candidate = sorted_cands[0]["name"]
+        else:
+            candidate = ""
 
     return best_district, candidate, info["all_keywords"]
