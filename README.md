@@ -37,19 +37,27 @@ election_expectation/
 │   │   └── config.yaml              # 크롤링 스케줄·선거구·후보·컴포넌트·RAG 설정
 │   │
 │   ├── app/                         # FastAPI 서버
-│   │   ├── main.py                  # 진입점
+│   │   ├── main.py                  # 진입점 (CORS 미들웨어 포함)
 │   │   ├── core/
 │   │   │   ├── dependencies.py      # DI 컨테이너 (config, VectorDB)
-│   │   │   └── pipeline_runner.py   # 백그라운드 파이프라인 실행
+│   │   │   ├── pipeline_runner.py   # 백그라운드 파이프라인 실행
+│   │   │   └── scheduler.py         # APScheduler (cron 자동 수집 + 판정)
 │   │   └── api/v1/
-│   │       ├── routes/admin.py      # 관리자 API
-│   │       └── schemas/admin.py     # 요청/응답 스키마
+│   │       ├── routes/
+│   │       │   ├── admin.py         # 관리자 API
+│   │       │   └── scores.py        # 판세 결과 API
+│   │       └── schemas/
+│   │           ├── admin.py         # 관리자 요청/응답 스키마
+│   │           └── score.py         # 판세 결과 요청/응답 스키마
 │   │
 │   ├── data/                        # 수집 결과 저장
 │   │   ├── scraped_urls.jsonl       # 수집된 URL 기록 (중복 방지, 영속 누적)
 │   │   ├── articles_YYYY-MM-DD_HHMMSS.jsonl
 │   │   ├── chunks_YYYY-MM-DD_HHMMSS.jsonl
-│   │   └── embeddings_YYYY-MM-DD_HHMMSS.jsonl
+│   │   ├── embeddings_YYYY-MM-DD_HHMMSS.jsonl
+│   │   └── verdicts/               # 판정 결과 (선거구별 JSONL 누적)
+│   │       ├── pyeongtaek_b.jsonl
+│   │       └── busan_bukgu_gap.jsonl
 │   │
 │   ├── ingestion/                   # 수집 파이프라인 (scrape→tag→chunk→embed→store)
 │   │   ├── pipeline.py
@@ -69,6 +77,7 @@ election_expectation/
 │   ├── rag/                         # 판정 엔진 (retrieve→rerank→score)
 │   │   ├── pipeline.py, retriever.py, reranker.py, scorer.py
 │   │   ├── openai_scorer.py, anthropic_scorer.py
+│   │   └── verdict_store.py         # 판정 결과 JSONL 영속 저장/조회
 │   │
 │   ├── models/                      # 도메인 Pydantic 모델
 │   │   ├── article.py, chunk.py, score.py
@@ -233,18 +242,31 @@ PYTHONPATH=. python -m ingestion.scraper.run --scraper naver --days 5
 
 ### 6. 서버 + 프론트엔드 실행
 
+백엔드와 프론트엔드를 **두 터미널에서 동시에** 실행해야 합니다.
+프론트엔드(`localhost:3000`)가 백엔드(`localhost:8000`) API를 호출하므로 백엔드가 먼저 실행되어 있어야 합니다.
+백엔드에는 CORS 미들웨어가 설정되어 `localhost:3000`에서의 요청을 허용합니다.
+
 ```bash
 # 백엔드 (터미널 1)
 cd backend
 uv run uvicorn app.main:app --reload
-# → http://localhost:8000/docs (Swagger UI)
+```
 
+- Swagger UI: http://localhost:8000/docs
+- Health check: http://localhost:8000/health
+
+```bash
 # 프론트엔드 (터미널 2)
 cd frontend
+npm install   # 최초 1회
 npm run dev
-# → http://localhost:3000 (대시보드)
-# → http://localhost:3000/admin (관리자)
 ```
+
+- 대시보드: http://localhost:3000
+- 관리자 페이지: http://localhost:3000/admin
+
+관리자 페이지에서 스크레이퍼 선택(전체/네이버/정치 매체) + 기간 입력 후 **"수집 실행"** 버튼으로 파이프라인을 수동 실행할 수 있습니다.
+기간을 비워두면 config.yaml의 `lookback_days` 기본값이 적용됩니다.
 
 ### 7. 테스트 실행
 
@@ -400,7 +422,8 @@ ComponentRegistry.create("name")    →  인스턴스 생성
 
 서버 실행: `cd backend && uv run uvicorn app.main:app --reload`
 
-Swagger UI: `http://localhost:8000/docs`
+- Swagger UI: http://localhost:8000/docs
+- CORS: `localhost:3000` 허용 (프론트엔드 연동)
 
 ### 엔드포인트
 
@@ -475,3 +498,4 @@ curl -X POST http://localhost:8000/api/v1/admin/vectordb/purge \
 - [x] APScheduler 연동 (cron 주기 자동 수집 + 판정)
 - [x] 테스트 215개 passed, 14개 skipped
 - [x] TypeScript 대시보드 (Next.js 16 + Recharts)
+- [x] CORS 미들웨어 (프론트엔드 → 백엔드 API 연동)
