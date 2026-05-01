@@ -42,6 +42,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 from app.api.v1.routes.admin import router as admin_router  # noqa: E402
 from app.api.v1.routes.scores import router as scores_router  # noqa: E402
