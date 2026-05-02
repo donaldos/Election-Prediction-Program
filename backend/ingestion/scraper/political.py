@@ -110,9 +110,12 @@ class PoliticalNewsScraper(AbstractScraper):
         import feedparser
         import httpx
 
-        rss_url = f"{base_url.rstrip('/')}/rss"
+        if base_url.endswith(".xml") or "rss" in base_url.lower():
+            rss_url = base_url
+        else:
+            rss_url = f"{base_url.rstrip('/')}/rss"
         logger.debug("[%s] RSS 요청: %s", self.source_name, rss_url)
-        resp = httpx.get(rss_url, timeout=10)
+        resp = httpx.get(rss_url, timeout=10, follow_redirects=True)
         resp.raise_for_status()
 
         feed = feedparser.parse(resp.text)
