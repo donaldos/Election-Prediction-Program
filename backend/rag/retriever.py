@@ -36,10 +36,13 @@ class Retriever:
         cutoff = self._cutoff_date()
         if cutoff is None:
             return results
+
+#       filtered = [r for r in results if r.published_at and r.published_at >= cutoff]
         filtered = [
             r for r in results
             if r.published_at and (r.published_at.replace(tzinfo=None) if r.published_at.tzinfo else r.published_at) >= cutoff
         ]
+        
         if len(filtered) < len(results):
             logger.info(
                 "시간 필터 적용 — %d건 → %d건 (최근 %d일)",
