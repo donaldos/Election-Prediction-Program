@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.chroma/
+data/articles_*.jsonl
+data/chunks_*.jsonl
+data/embeddings_*.jsonl
+.env
+.venv/
+tests/

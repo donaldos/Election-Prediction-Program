@@ -41,14 +41,14 @@ export const api = {
 
   getPipelineStatus: () => fetchJSON<PipelineStatus>("/admin/pipeline/status"),
 
-  runPipeline: (scraper = "all", days?: number) =>
-    fetchJSON<{ task_id: string; status: string; message: string }>(
+  runPipeline: (scraper = "all", days?: number) => {
+    const body: Record<string, unknown> = { scraper };
+    if (days != null && days >= 1) body.days = days;
+    return fetchJSON<{ task_id: string; status: string; message: string }>(
       "/admin/pipeline/run",
-      {
-        method: "POST",
-        body: JSON.stringify({ scraper, days }),
-      }
-    ),
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
 
   rebuildVectorDB: () =>
     fetchJSON<{ task_id: string; status: string; message: string }>(

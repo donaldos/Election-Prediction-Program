@@ -172,11 +172,11 @@ export default function AdminPage() {
 
           <div className="flex items-end gap-3 mb-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">스크레이퍼</label>
+              <label className="block text-sm font-medium text-gray-900 mb-1">스크레이퍼</label>
               <select
                 value={scraperType}
                 onChange={(e) => setScraperType(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900"
               >
                 <option value="all">전체</option>
                 <option value="naver">네이버</option>
@@ -184,13 +184,13 @@ export default function AdminPage() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">기간 (일)</label>
+              <label className="block text-sm font-medium text-gray-900 mb-1">기간 (일)</label>
               <input
                 type="number"
                 value={scraperDays}
                 onChange={(e) => setScraperDays(e.target.value)}
                 placeholder="기본값"
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-24"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-24"
               />
             </div>
             <button
@@ -221,7 +221,7 @@ export default function AdminPage() {
           <h2 className="text-lg font-bold text-gray-900 mb-4">만료 벡터 정리</h2>
           <div className="flex items-end gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">N일 이전 삭제</label>
+              <label className="block text-sm font-medium text-gray-900 mb-1">N일 이전 삭제</label>
               <input
                 type="number"
                 value={purgeInput}
@@ -244,29 +244,29 @@ export default function AdminPage() {
           <h2 className="text-lg font-bold text-gray-900 mb-4">RAG 설정</h2>
           <div className="grid grid-cols-2 gap-4 mb-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-900 mb-1">
                 검색 기간 (lookback_days)
               </label>
               <input
                 type="number"
                 value={lookbackDays}
                 onChange={(e) => setLookbackDays(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-full"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-900 mb-1">
                 검색 수 (top_k)
               </label>
               <input
                 type="number"
                 value={topK}
                 onChange={(e) => setTopK(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-full"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-900 mb-1">
                 유사도 임계값 (min_score)
               </label>
               <input
@@ -274,18 +274,18 @@ export default function AdminPage() {
                 step="0.1"
                 value={minScore}
                 onChange={(e) => setMinScore(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-full"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-900 mb-1">
                 만료 정리 (purge_days)
               </label>
               <input
                 type="number"
                 value={purgeDays}
                 onChange={(e) => setPurgeDays(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-full"
               />
             </div>
           </div>
