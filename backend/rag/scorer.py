@@ -7,13 +7,13 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from ingestion.base_registry import ComponentRegistry
-from models.score import CandidateScore, DailyVerdict, SearchResult
+from models.score import CandidateReasoning, CandidateScore, DailyVerdict, SearchResult
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 당신은 한국 선거 판세 분석 전문가입니다.
-제공된 뉴스 기사 청크를 분석하여 각 후보의 판세를 판정하고, 후보별로 판세를 끌어올리기 위한 전략까지 도출합니다.
+제공된 뉴스 기사 청크와 여론조사 데이터를 분석하여 각 후보의 판세를 판정하고, 후보별로 판세를 끌어올리기 위한 전략까지 도출합니다.
 
 판정 기준:
 - "우세": 여론조사 선두, 긍정적 언론 보도 다수, 지지 기반 강화 징후
@@ -28,9 +28,8 @@ SYSTEM_PROMPT = """\
 규칙:
 - 모든 후보의 win_probability 합계는 반드시 1.0
 - 여론조사 수치가 있으면 이를 기반으로, 없으면 기사 논조를 종합
-- reasoning은 한국어로 5~7문장, 근거를 구체적으로 제시
+- reasoning 내부의 각 항목(strengths, weaknesses, forecast)은 한국어로 3~5문장씩, 구체적 근거 포함
 - strategy는 한국어로 5~7문장, 실행 가능한 수준으로 작성
-
 
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트 없이 JSON만 출력하세요:
 {
@@ -39,10 +38,14 @@ SYSTEM_PROMPT = """\
       "candidate": "후보명",
       "verdict": "우세|균형|열세",
       "win_probability": 0.0,
-      "reasoning": "판정 근거"
+      "reasoning": {
+        "strengths": "장점 — 해당 후보에게 유리한 요인 (여론조사 수치, 긍정 보도, 지지 기반, 조직력 등)",
+        "weaknesses": "단점 — 해당 후보에게 불리한 요인 (부정 보도, 내부 갈등, 약한 인지도 등)",
+        "forecast": "예측 — 향후 판세 전망 (추세 변화, 변수, 당선 가능성 근거)"
+      }
     }
   ],
-  "summary": "선거구 전체 판세 요약 (1~2문장)"
+  "summary": "선거구 전체 판세 요약 (1~2문장)",
   "strategy": "전략"
 }"""
 
@@ -107,13 +110,18 @@ def _parse_llm_response(
     scores: list[CandidateScore] = []
     for item in data.get("candidates", []):
         name = item["candidate"]
+        raw_reasoning = item["reasoning"]
+        if isinstance(raw_reasoning, dict):
+            reasoning = CandidateReasoning(**raw_reasoning)
+        else:
+            reasoning = raw_reasoning
         scores.append(CandidateScore(
             candidate=name,
             party=candidate_parties.get(name, ""),
             district_id=district["id"],
             verdict=item["verdict"],
             win_probability=item["win_probability"],
-            reasoning=item["reasoning"],
+            reasoning=reasoning,
             supporting_chunks=chunk_ids,
             chunk_count=len(chunks),
         ))

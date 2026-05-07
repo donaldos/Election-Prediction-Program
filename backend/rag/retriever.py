@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from ingestion.embedder.base import AbstractEmbedder
 from models.score import SearchResult
 from vectordb.base import AbstractVectorRepository
 
 logger = logging.getLogger(__name__)
+
+QUERY_TEMPLATES_PATH = Path(__file__).resolve().parent.parent / "config" / "query_templates.json"
+
+
+def _load_query_templates() -> dict:
+    if not QUERY_TEMPLATES_PATH.exists():
+        return {}
+    with QUERY_TEMPLATES_PATH.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 class Retriever:
@@ -121,32 +132,56 @@ class Retriever:
         all_results: list[SearchResult] = []
         seen_ids: set[str] = set()
 
+        templates = _load_query_templates()
+        district_templates = templates.get(district["id"], {})
+        common_queries = district_templates.get("_common", [])
+
         logger.info("=" * 60)
         logger.info("선거구 통합 검색 시작 — %s (후보 %d명)", district["name"], len(district.get("candidates", [])))
+        if district_templates:
+            logger.info("  쿼리 템플릿 사용: query_templates.json")
         logger.info("=" * 60)
 
-        for cand in district.get("candidates", []):
-            name = cand["name"]
-            party = cand.get("party", "")
-            query = f"{district['name']} {name} 선거 판세"
-
-            logger.info("")
-            logger.info("▶ 후보: %s (%s)", name, party)
-
-            results = self.retrieve(
-                query=query,
-                district_id=district["id"],
-                candidate=name,
-            )
-
+        def _add_results(results: list[SearchResult]) -> int:
             new_count = 0
             for r in results:
                 if r.id not in seen_ids:
                     all_results.append(r)
                     seen_ids.add(r.id)
                     new_count += 1
+            return new_count
 
-            logger.info("  신규 %d건 추가 (중복 %d건 제외)", new_count, len(results) - new_count)
+        if common_queries:
+            logger.info("")
+            logger.info("▶ 공통 쿼리 (%d건)", len(common_queries))
+            for query in common_queries:
+                results = self.retrieve(
+                    query=query,
+                    district_id=district["id"],
+                    candidate=None,
+                )
+                new_count = _add_results(results)
+                logger.info("  신규 %d건 추가 (중복 %d건 제외)", new_count, len(results) - new_count)
+
+        for cand in district.get("candidates", []):
+            name = cand["name"]
+            party = cand.get("party", "")
+
+            candidate_queries = district_templates.get(name)
+            if candidate_queries is None:
+                candidate_queries = [f"{district['name']} {name} 선거 판세"]
+
+            logger.info("")
+            logger.info("▶ 후보: %s (%s) — 쿼리 %d건", name, party, len(candidate_queries))
+
+            for query in candidate_queries:
+                results = self.retrieve(
+                    query=query,
+                    district_id=district["id"],
+                    candidate=name,
+                )
+                new_count = _add_results(results)
+                logger.info("  신규 %d건 추가 (중복 %d건 제외)", new_count, len(results) - new_count)
 
         logger.info("")
         logger.info("=" * 60)

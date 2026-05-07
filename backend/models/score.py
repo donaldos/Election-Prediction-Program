@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Union
 
 from pydantic import BaseModel
 
@@ -19,6 +20,14 @@ class SearchResult(BaseModel):
     district_id: str
 
 
+class CandidateReasoning(BaseModel):
+    """후보별 판정 근거 상세."""
+
+    strengths: str
+    weaknesses: str
+    forecast: str
+
+
 class CandidateScore(BaseModel):
     """후보별 판정 결과. Scorer 출력."""
 
@@ -28,7 +37,7 @@ class CandidateScore(BaseModel):
 
     verdict: str
     win_probability: float
-    reasoning: str
+    reasoning: Union[str, CandidateReasoning]
 
     supporting_chunks: list[str]
     chunk_count: int
