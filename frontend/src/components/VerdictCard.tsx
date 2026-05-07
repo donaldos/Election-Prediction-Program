@@ -65,7 +65,15 @@ export default function VerdictCard({ verdict }: Props) {
                 />
               </div>
 
-              <p className="text-sm text-gray-600">{c.reasoning}</p>
+              {typeof c.reasoning === "string" ? (
+                <p className="text-sm text-gray-600">{c.reasoning}</p>
+              ) : (
+                <div className="text-sm space-y-1 mt-1">
+                  <p className="text-green-700"><span className="font-medium">장점:</span> {c.reasoning.strengths}</p>
+                  <p className="text-red-700"><span className="font-medium">단점:</span> {c.reasoning.weaknesses}</p>
+                  <p className="text-blue-700"><span className="font-medium">예측:</span> {c.reasoning.forecast}</p>
+                </div>
+              )}
             </div>
           );
         })}

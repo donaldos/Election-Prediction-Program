@@ -1,9 +1,15 @@
+export interface CandidateReasoning {
+  strengths: string;
+  weaknesses: string;
+  forecast: string;
+}
+
 export interface CandidateScore {
   candidate: string;
   party: string;
   verdict: string;
   win_probability: number;
-  reasoning: string;
+  reasoning: string | CandidateReasoning;
 }
 
 export interface Verdict {

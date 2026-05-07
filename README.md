@@ -55,6 +55,7 @@ election_expectation/
 │   │
 │   ├── data/                        # 수집 결과 저장
 │   │   ├── scraped_urls.jsonl       # 수집된 URL 기록 (중복 방지, 영속 누적)
+│   │   ├── polls.jsonl              # 여론조사 데이터 (관리자 페이지에서 입력)
 │   │   ├── articles_YYYY-MM-DD_HHMMSS.jsonl
 │   │   ├── chunks_YYYY-MM-DD_HHMMSS.jsonl
 │   │   ├── embeddings_YYYY-MM-DD_HHMMSS.jsonl
@@ -81,10 +82,11 @@ election_expectation/
 │   ├── rag/                         # 판정 엔진 (retrieve→rerank→score)
 │   │   ├── pipeline.py, retriever.py, reranker.py, scorer.py
 │   │   ├── openai_scorer.py, anthropic_scorer.py
-│   │   └── verdict_store.py         # 판정 결과 JSONL 영속 저장/조회
+│   │   ├── verdict_store.py         # 판정 결과 JSONL 영속 저장/조회
+│   │   └── poll_store.py            # 여론조사 데이터 JSONL 영속 저장/조회
 │   │
 │   ├── models/                      # 도메인 Pydantic 모델
-│   │   ├── article.py, chunk.py, score.py
+│   │   ├── article.py, chunk.py, score.py, poll.py
 │   │
 │   └── tests/
 │       ├── app/                     # 31개 (admin 20 + scores 6 + scheduler 5)
@@ -272,6 +274,10 @@ PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --skip-score
 
 # 30일 이전 벡터 삭제 후 판정
 PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
+
+# 단발 질의 모드 (자유 질문 → VectorDB 검색 → LLM 답변)
+PYTHONPATH=. python -m rag.pipeline --query "조국의 평택을 지지율 변화는?"
+PYTHONPATH=. python -m rag.pipeline --query "한동훈과 박민식 비교" --top-k 10
 ```
 
 #### 5. 스크레이퍼 단독 실행 (디버깅용)
@@ -309,6 +315,11 @@ npm run dev
 관리자 페이지에서 스크레이퍼 선택(전체/네이버/정치 매체) + 기간 입력 후 **"수집 실행"** 버튼으로 파이프라인을 수동 실행할 수 있습니다.
 기간을 비워두면 config.yaml의 `lookback_days` 기본값이 적용됩니다.
 
+관리자 페이지에서 **여론조사 데이터**도 입력할 수 있습니다:
+1. 선거구 선택 → 조사기관·조사일 입력 → 후보별 지지율(%) 입력 → **"적용"** 클릭
+2. 저장된 여론조사는 다음 판정 실행 시 LLM 프롬프트에 자동 포함됩니다.
+3. 이력 테이블에서 과거 여론조사 데이터를 확인·삭제할 수 있습니다.
+
 #### 7. 테스트 실행
 
 ```bash
@@ -343,6 +354,7 @@ PYTHONPATH=. pytest tests/rag/ -v
 | 파일 | 경로 | 용도 |
 |------|------|------|
 | URL 기록 | `data/scraped_urls.jsonl` | 중복 수집 방지 (영속) |
+| 여론조사 | `data/polls.jsonl` | 조사기관·날짜·후보별 지지율 이력 (관리자 페이지에서 입력) |
 | 기사 본문 | `data/articles_YYYY-MM-DD_HHMMSS.jsonl` | 일자별 수집 기사 전문 |
 | 청크 | `data/chunks_YYYY-MM-DD_HHMMSS.jsonl` | 청킹 결과 |
 | 임베딩 | `data/embeddings_YYYY-MM-DD_HHMMSS.jsonl` | 임베딩 결과 |
@@ -358,6 +370,8 @@ PYTHONPATH=. pytest tests/rag/ -v
 - **scrapers**: 스크레이퍼별 설정 (max_articles, delay, lookback_days)
 - **chunker / embedder / vectordb**: 파이프라인 컴포넌트 설정
 - **rag**: 검색(top_k, lookback_days), 재정렬(min_score), 판정(provider, model), 만료 정리(purge_days)
+
+여론조사 데이터는 config.yaml이 아닌 관리자 페이지(또는 API)를 통해 `data/polls.jsonl`에 저장됩니다.
 
 ### 후보 명단 (2026년 4월 기준)
 
@@ -410,7 +424,7 @@ PYTHONPATH=. pytest tests/rag/ -v
 ```
 retrieve (VectorDB 의미 검색 + 시간 필터)
   → rerank (임계값 필터링 + URL 중복 제거 + 점수 정렬)
-    → score (LLM 판정 + 승리 확률 정규화)
+    → score (여론조사 데이터 + 뉴스 청크 → LLM 판정 + 승리 확률 정규화)
       → save (VerdictStore — JSONL 영속 저장)
 ```
 
@@ -476,6 +490,12 @@ JSON 형식:
 - 한동훈 (무소속)
 - 박민식 (국민의힘)
 
+## 최신 여론조사
+조사기관: 한국갤럽, 조사일: 2026-05-05
+- 한동훈 (무소속): 38.2%
+- 하정우 (더불어민주당): 31.5%
+- 박민식 (국민의힘): 22.1%
+
 ## 수집된 뉴스 청크 (15건)
 
 [1] 한동훈·하정우 양강 구도 (naver_news, 2026-05-04) — score: 0.892
@@ -490,7 +510,7 @@ JSON 형식:
 JSON으로 출력하세요.
 ```
 
-LLM은 각 청크의 **제목, 출처, 날짜, 유사도 스코어, 본문 미리보기(300자)**를 근거로 판정합니다. 응답이 JSON으로 파싱된 후 확률 합이 1.0이 아니면 자동 정규화됩니다.
+LLM은 각 청크의 **제목, 출처, 날짜, 유사도 스코어, 본문 미리보기(300자)**와 **최신 여론조사 수치**(등록된 경우)를 근거로 판정합니다. 여론조사 데이터는 관리자 페이지에서 입력하며, `data/polls.jsonl`에 이력이 누적 저장됩니다. 판정 시 해당 선거구의 가장 최근 조사일 데이터가 자동으로 프롬프트에 포함됩니다. 응답이 JSON으로 파싱된 후 확률 합이 1.0이 아니면 자동 정규화됩니다.
 
 ### Step 4: Save — 판정 결과 저장
 
@@ -602,6 +622,10 @@ services:
 | `GET` | `/api/v1/admin/config/rag` | RAG 설정만 조회 |
 | `PATCH` | `/api/v1/admin/config/rag` | RAG 설정 변경 (lookback_days, top_k, scorer 등) |
 | `GET` | `/api/v1/admin/districts` | 선거구/후보 목록 |
+| `GET` | `/api/v1/admin/polls` | 여론조사 목록 조회 (`?district_id=` 필터 가능) |
+| `POST` | `/api/v1/admin/polls` | 여론조사 일괄 저장 (조사기관·날짜·후보별 지지율) |
+| `DELETE` | `/api/v1/admin/polls/{id}` | 여론조사 개별 삭제 |
+| `DELETE` | `/api/v1/admin/polls` | 여론조사 전체 삭제 (`?district_id=` 필터 가능) |
 
 ### 판세 결과 API
 
@@ -640,6 +664,18 @@ curl -X PATCH http://localhost:8000/api/v1/admin/config/rag \
 curl -X POST http://localhost:8000/api/v1/admin/vectordb/purge \
   -H "Content-Type: application/json" \
   -d '{"purge_days": 30}'
+
+# 여론조사 입력 (부산북구갑, 한국갤럽 2026-05-05)
+curl -X POST http://localhost:8000/api/v1/admin/polls \
+  -H "Content-Type: application/json" \
+  -d '{"entries": [
+    {"district_id": "busan_bukgu_gap", "candidate": "한동훈", "party": "무소속", "support": 38.2, "pollster": "한국갤럽", "survey_date": "2026-05-05"},
+    {"district_id": "busan_bukgu_gap", "candidate": "하정우", "party": "더불어민주당", "support": 31.5, "pollster": "한국갤럽", "survey_date": "2026-05-05"},
+    {"district_id": "busan_bukgu_gap", "candidate": "박민식", "party": "국민의힘", "support": 22.1, "pollster": "한국갤럽", "survey_date": "2026-05-05"}
+  ]}'
+
+# 여론조사 조회
+curl http://localhost:8000/api/v1/admin/polls?district_id=busan_bukgu_gap
 ```
 
 ---
@@ -660,6 +696,8 @@ curl -X POST http://localhost:8000/api/v1/admin/vectordb/purge \
 - [x] FastAPI 관리자 API (파이프라인 실행, VectorDB 관리, 설정 변경)
 - [x] 판세 결과 API (최신/이력/시계열 조회, 판정 실행)
 - [x] APScheduler 연동 (cron 주기 자동 수집 + 판정)
+- [x] 여론조사 관리 (PollStore — JSONL 이력 저장, 관리자 페이지 스프레드시트형 UI, API CRUD)
+- [x] 여론조사 → LLM 판정 연동 (최신 조사 데이터 자동 프롬프트 주입)
 - [x] 테스트 225개 passed, 15개 skipped
 - [x] TypeScript 대시보드 (Next.js 16 + Recharts)
 - [x] CORS 미들웨어 (프론트엔드 → 백엔드 API 연동, `CORS_ORIGINS` 환경변수 지원)
