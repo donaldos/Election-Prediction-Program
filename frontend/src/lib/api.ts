@@ -2,6 +2,7 @@ import type {
   District,
   PipelineStatus,
   PollList,
+  QueryResponse,
   RAGConfig,
   TimeSeries,
   Verdict,
@@ -94,6 +95,15 @@ export const api = {
     const q = districtId ? `?district_id=${districtId}` : "";
     return fetchJSON<{ deleted: number; message: string }>(`/admin/polls${q}`, {
       method: "DELETE",
+    });
+  },
+
+  query: (query: string, topK?: number) => {
+    const body: Record<string, unknown> = { query };
+    if (topK != null) body.top_k = topK;
+    return fetchJSON<QueryResponse>("/scores/query", {
+      method: "POST",
+      body: JSON.stringify(body),
     });
   },
 };

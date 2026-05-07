@@ -8,6 +8,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.api.v1.schemas.score import (
     CandidateScoreResponse,
+    QueryRequest,
+    QueryResponse,
+    SourceChunk,
     TimeSeriesPoint,
     TimeSeriesResponse,
     VerdictListResponse,
@@ -161,3 +164,89 @@ def run_verdict(district_id: str, req: VerdictRunRequest | None = None):
     store.save(verdict)
 
     return _verdict_to_response(verdict)
+
+
+# ── 자연어 질의 ───────────────────────────────────
+
+@router.post("/query", response_model=QueryResponse)
+def query_rag(req: QueryRequest):
+    import time
+
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    config = reload_config()
+
+    if req.top_k:
+        config.setdefault("rag", {}).setdefault("retriever", {})["top_k"] = req.top_k
+
+    from rag.pipeline import _build_embedder, _build_reranker, _build_scorer, _build_vector_repo
+
+    embedder = _build_embedder(config)
+    vector_repo = _build_vector_repo(config)
+    reranker = _build_reranker(config)
+
+    query_vector = embedder.embed_query(req.query)
+    top_k = config.get("rag", {}).get("retriever", {}).get("top_k", 20)
+
+    raw_results = vector_repo.search(
+        query_vector=query_vector,
+        top_k=top_k,
+        filters=None,
+    )
+
+    from models.score import SearchResult
+    results = []
+    for r in raw_results:
+        try:
+            results.append(SearchResult(
+                id=r["id"],
+                score=r["score"],
+                text=r.get("text", ""),
+                article_url=r.get("article_url", ""),
+                source=r.get("source", ""),
+                title=r.get("title", ""),
+                published_at=r.get("published_at"),
+                candidate=r.get("candidate", ""),
+                district_id=r.get("district_id", ""),
+            ))
+        except Exception:
+            continue
+
+    results = reranker.rerank(req.query, results)
+
+    if not results:
+        return QueryResponse(
+            query=req.query,
+            answer="관련 뉴스를 찾을 수 없습니다. 수집 파이프라인을 먼저 실행하세요.",
+            sources=[],
+            chunk_count=0,
+        )
+
+    from rag.pipeline import QA_SYSTEM_PROMPT, _build_qa_prompt
+
+    scorer = _build_scorer(config)
+    user_prompt = _build_qa_prompt(req.query, results)
+
+    t0 = time.monotonic()
+    answer = scorer._call_llm(QA_SYSTEM_PROMPT, user_prompt, json_mode=False)
+    elapsed = time.monotonic() - t0
+    logger.info("질의 응답 완료 — %.1f초, 청크 %d건", elapsed, len(results))
+
+    sources = [
+        SourceChunk(
+            title=r.title,
+            source=r.source,
+            published_at=r.published_at,
+            score=r.score,
+            text_preview=r.text[:200],
+        )
+        for r in results[:10]
+    ]
+
+    return QueryResponse(
+        query=req.query,
+        answer=answer,
+        sources=sources,
+        chunk_count=len(results),
+    )

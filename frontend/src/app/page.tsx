@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { District, TimeSeries, Verdict } from "@/lib/types";
 import DistrictSelector from "@/components/DistrictSelector";
+import QueryBox from "@/components/QueryBox";
 import VerdictCard from "@/components/VerdictCard";
 import WinProbChart from "@/components/WinProbChart";
 
@@ -95,6 +96,8 @@ export default function Home() {
             아직 판정 결과가 없습니다. 관리자 페이지에서 판정을 실행하세요.
           </div>
         )}
+
+        <QueryBox />
       </main>
     </div>
   );

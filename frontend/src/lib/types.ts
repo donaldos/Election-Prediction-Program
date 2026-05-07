@@ -86,3 +86,18 @@ export interface PollList {
   count: number;
   entries: PollEntry[];
 }
+
+export interface SourceChunk {
+  title: string;
+  source: string;
+  published_at: string | null;
+  score: number;
+  text_preview: string;
+}
+
+export interface QueryResponse {
+  query: string;
+  answer: string;
+  sources: SourceChunk[];
+  chunk_count: number;
+}
