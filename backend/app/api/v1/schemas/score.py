@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Union
 
 from pydantic import BaseModel, Field
+
+from models.score import CandidateReasoning
 
 
 class CandidateScoreResponse(BaseModel):
@@ -10,7 +13,7 @@ class CandidateScoreResponse(BaseModel):
     party: str
     verdict: str
     win_probability: float
-    reasoning: str
+    reasoning: Union[str, CandidateReasoning]
 
 
 class VerdictResponse(BaseModel):
