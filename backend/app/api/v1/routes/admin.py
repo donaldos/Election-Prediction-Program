@@ -12,6 +12,10 @@ from app.api.v1.schemas.admin import (
     PipelineRunRequest,
     PipelineRunResponse,
     PipelineStatusResponse,
+    PollBatchRequest,
+    PollDeleteResponse,
+    PollEntryResponse,
+    PollListResponse,
     PurgeRequest,
     PurgeResponse,
     RAGConfigResponse,
@@ -182,3 +186,78 @@ def list_districts():
         )
         for d in config.get("districts", [])
     ]
+
+
+# ── 여론조사 관리 ─────────────────────────────────
+
+def _get_poll_store():
+    from rag.poll_store import PollStore
+    return PollStore()
+
+
+def _entry_to_response(e) -> PollEntryResponse:
+    return PollEntryResponse(
+        id=e.id,
+        district_id=e.district_id,
+        candidate=e.candidate,
+        party=e.party,
+        support=e.support,
+        pollster=e.pollster,
+        survey_date=e.survey_date.isoformat(),
+        created_at=e.created_at.isoformat(),
+    )
+
+
+@router.get("/polls", response_model=PollListResponse)
+def list_polls(district_id: str | None = None):
+    store = _get_poll_store()
+    if district_id:
+        entries = store.load_by_district(district_id)
+    else:
+        entries = store.load_all()
+    return PollListResponse(
+        count=len(entries),
+        entries=[_entry_to_response(e) for e in entries],
+    )
+
+
+@router.post("/polls", response_model=PollListResponse)
+def save_polls(req: PollBatchRequest):
+    from datetime import date as date_type
+    from models.poll import PollEntry
+
+    entries = [
+        PollEntry(
+            district_id=e.district_id,
+            candidate=e.candidate,
+            party=e.party,
+            support=e.support,
+            pollster=e.pollster,
+            survey_date=date_type.fromisoformat(e.survey_date),
+        )
+        for e in req.entries
+    ]
+
+    store = _get_poll_store()
+    saved = store.save(entries)
+    logger.info("여론조사 저장 — %d건", len(saved))
+    return PollListResponse(
+        count=len(saved),
+        entries=[_entry_to_response(e) for e in saved],
+    )
+
+
+@router.delete("/polls/{entry_id}", response_model=PollDeleteResponse)
+def delete_poll(entry_id: str):
+    store = _get_poll_store()
+    if not store.delete(entry_id):
+        raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다.")
+    return PollDeleteResponse(deleted=1, message="삭제 완료")
+
+
+@router.delete("/polls", response_model=PollDeleteResponse)
+def delete_all_polls(district_id: str | None = None):
+    store = _get_poll_store()
+    deleted = store.delete_all(district_id)
+    scope = f"선거구 {district_id}" if district_id else "전체"
+    return PollDeleteResponse(deleted=deleted, message=f"{scope} 여론조사 {deleted}건 삭제 완료")

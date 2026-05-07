@@ -447,3 +447,121 @@ class TestPgvectorRepository:
         repo = PgvectorRepository()
         repo.load()
         assert repo.is_loaded
+
+
+# ── PineconeRepository ──────────────────────────────────
+
+
+class TestPineconeRepository:
+
+    def test_name(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        assert PineconeRepository(api_key="test-key").name == "pinecone"
+
+    def test_registry_lookup(self):
+        repo = VectorRepositoryRegistry.create(
+            "pinecone", collection="test", api_key="test-key",
+        )
+        assert repo.name == "pinecone"
+
+    def test_load_creates_index_if_missing(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository(api_key="test-key", index_name="test-idx")
+
+        mock_index = MagicMock()
+        mock_pc = MagicMock()
+        mock_pc.list_indexes.return_value = []
+        mock_pc.Index.return_value = mock_index
+
+        with patch.dict("sys.modules", {"pinecone": MagicMock(Pinecone=MagicMock(return_value=mock_pc), ServerlessSpec=MagicMock())}):
+            repo.load()
+            mock_pc.create_index.assert_called_once()
+            assert repo.is_loaded
+
+    def test_load_skips_create_if_exists(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository(api_key="test-key", index_name="test-idx")
+
+        mock_existing = MagicMock()
+        mock_existing.name = "test-idx"
+        mock_pc = MagicMock()
+        mock_pc.list_indexes.return_value = [mock_existing]
+        mock_pc.Index.return_value = MagicMock()
+
+        with patch.dict("sys.modules", {"pinecone": MagicMock(Pinecone=MagicMock(return_value=mock_pc), ServerlessSpec=MagicMock())}):
+            repo.load()
+            mock_pc.create_index.assert_not_called()
+
+    def test_upsert(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository(api_key="test-key")
+        repo._loaded = True
+        repo._index = MagicMock()
+
+        count = repo.upsert(SAMPLE_CHUNKS)
+        assert count == 2
+        repo._index.upsert.assert_called_once()
+
+    def test_search(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository(api_key="test-key")
+        repo._loaded = True
+        repo._index = MagicMock()
+        repo._index.query.return_value = {
+            "matches": [
+                {"id": "chunk-001", "score": 0.95, "metadata": {"text": "test", "candidate": "후보A"}},
+            ]
+        }
+
+        results = repo.search([0.1] * 1536, top_k=5)
+        assert len(results) == 1
+        assert results[0]["id"] == "chunk-001"
+        assert results[0]["score"] == 0.95
+        assert results[0]["candidate"] == "후보A"
+        assert "text" not in results[0].get("metadata", {})
+
+    def test_search_with_filters(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository(api_key="test-key")
+        repo._loaded = True
+        repo._index = MagicMock()
+        repo._index.query.return_value = {"matches": []}
+
+        repo.search([0.1] * 1536, top_k=5, filters={"district_id": "pyeongtaek_b"})
+        call_kwargs = repo._index.query.call_args[1]
+        assert call_kwargs["filter"] == {"district_id": {"$eq": "pyeongtaek_b"}}
+
+    def test_count(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository(api_key="test-key")
+        repo._loaded = True
+        repo._index = MagicMock()
+        repo._index.describe_index_stats.return_value = {"total_vector_count": 42}
+
+        assert repo.count() == 42
+
+    def test_delete(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository(api_key="test-key")
+        repo._loaded = True
+        repo._index = MagicMock()
+
+        count = repo.delete(["id-1", "id-2"])
+        assert count == 2
+        repo._index.delete.assert_called_once()
+
+    @pytest.mark.skip(reason="Pinecone 클라우드 계정 + API 키 필요 — 로컬에서만 실행")
+    def test_load_real(self):
+        from vectordb.pinecone_repo import PineconeRepository
+
+        repo = PineconeRepository()
+        repo.load()
+        assert repo.is_loaded

@@ -87,3 +87,39 @@ class DistrictResponse(BaseModel):
     id: str
     name: str
     candidates: list[dict]
+
+
+# ── 여론조사 ──────────────────────────────────────
+
+class PollEntryRequest(BaseModel):
+    district_id: str
+    candidate: str
+    party: str
+    support: float = Field(ge=0, le=100)
+    pollster: str
+    survey_date: str = Field(description="YYYY-MM-DD")
+
+
+class PollBatchRequest(BaseModel):
+    entries: list[PollEntryRequest]
+
+
+class PollEntryResponse(BaseModel):
+    id: str
+    district_id: str
+    candidate: str
+    party: str
+    support: float
+    pollster: str
+    survey_date: str
+    created_at: str
+
+
+class PollListResponse(BaseModel):
+    count: int
+    entries: list[PollEntryResponse]
+
+
+class PollDeleteResponse(BaseModel):
+    deleted: int
+    message: str

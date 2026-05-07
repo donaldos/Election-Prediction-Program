@@ -3,8 +3,11 @@
 # 2026-06-03 재보궐선거 (평택을, 부산북구갑)
 # ============================================================
 
+#schedule:
+#  cron: "0 7,12,18 * * *"            # 하루 3회 (07:00, 12:00, 18:00)
+
 schedule:
-  cron: "0 7,12,18 * * *"            # 하루 3회 (07:00, 12:00, 18:00)
+  cron: "*/15 * * * *"
 
 # ------------------------------------------------------------
 # 선거구 및 후보 정의
@@ -51,7 +54,7 @@ scrapers:
     params:
       max_articles_per_run: 100
       request_delay_sec: 1.5          # robots.txt 준수
-      lookback_days: 2                # date_from 미지정 시 오늘 기준 N일 전부터 검색
+      lookback_days: 7                # date_from 미지정 시 오늘 기준 N일 전부터 검색
 
   political:
     type: political
@@ -98,7 +101,7 @@ embedder:
 # Vector DB 설정
 # ------------------------------------------------------------
 vectordb:
-  type: chroma                        # qdrant | chroma | milvus_lite | lancedb | weaviate | pgvector
+  type: chroma                        # qdrant | chroma | milvus_lite | lancedb | weaviate | pgvector | pinecone
   collection: election_chunks
   params:
     # ── chroma 전용 (type: chroma) ──
@@ -126,6 +129,13 @@ vectordb:
     # ── pgvector 전용 (type: pgvector 전환 시, PostgreSQL 필요) ──
     # dsn: "postgresql://localhost:5432/election_radar"
     # dimensions: 1536
+
+    # ── pinecone 전용 (type: pinecone 전환 시, .env에 PINECONE_API_KEY 필요) ──
+    # index_name: election-radar
+    # dimensions: 1536
+    # metric: cosine                   # cosine | euclidean | dotproduct
+    # cloud: aws                       # aws | gcp | azure
+    # region: us-east-1
 
 # ------------------------------------------------------------
 # RAG 판정 엔진 설정

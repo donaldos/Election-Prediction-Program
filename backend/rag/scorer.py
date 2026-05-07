@@ -58,6 +58,15 @@ def _build_user_prompt(
         lines.append(f"- {cand['name']} ({cand['party']})")
     lines.append("")
 
+    from rag.poll_store import PollStore
+    poll_summary = PollStore().get_latest_summary(district["id"])
+    if poll_summary:
+        lines.append("## 최신 여론조사")
+        lines.append(f"조사기관: {poll_summary.pollster}, 조사일: {poll_summary.survey_date}")
+        for c in poll_summary.candidates:
+            lines.append(f"- {c.candidate} ({c.party}): {c.support}%")
+        lines.append("")
+
     lines.append(f"## 수집된 뉴스 청크 ({len(chunks)}건)\n")
     for i, chunk in enumerate(chunks, 1):
         lines.append(

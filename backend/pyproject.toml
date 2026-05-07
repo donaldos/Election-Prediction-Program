@@ -16,6 +16,7 @@ dependencies = [
     "openai>=2.32.0",
     "chromadb>=1.5.8",
     "anthropic>=0.97.0",
+    "pinecone>=5.0",
 ]
 
 [project.optional-dependencies]
