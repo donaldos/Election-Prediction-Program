@@ -23,8 +23,14 @@ class SearchResult(BaseModel):
 class CandidateReasoning(BaseModel):
     """후보별 판정 근거 상세."""
 
+    support_rate: str
+    pledge_reaction: str
     strengths: str
     weaknesses: str
+    issues: str
+    support_trend: str
+    public_opinion: str
+    strategy: str
     forecast: str
 
 

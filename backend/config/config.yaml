@@ -155,4 +155,4 @@ rag:
     provider: openai                   # openai | anthropic
     model: gpt-4o
     temperature: 0.1                   # 판정 일관성을 위해 낮은 값
-    max_tokens: 2000
+    max_tokens: 8000

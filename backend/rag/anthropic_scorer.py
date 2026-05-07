@@ -15,7 +15,7 @@ class AnthropicScorer(AbstractScorer):
         self,
         model: str = "claude-sonnet-4-6",
         temperature: float = 0.1,
-        max_tokens: int = 2000,
+        max_tokens: int = 8000,
     ) -> None:
         self._model = model
         self._temperature = temperature

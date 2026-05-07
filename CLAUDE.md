@@ -318,7 +318,7 @@ rag:
     provider: openai                # openai | anthropic
     model: gpt-4o
     temperature: 0.1
-    max_tokens: 2000
+    max_tokens: 8000
   purge_days: 60                    # N일 이전 벡터 자동 삭제 (null이면 비활성)
 ```
 

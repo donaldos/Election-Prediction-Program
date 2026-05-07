@@ -153,6 +153,19 @@ def _print_chunks(results, district: dict) -> None:
         print(f"    ... 외 {len(results) - 5}건")
 
 
+_REASONING_LABELS = [
+    ("support_rate",    "📊 지지율"),
+    ("pledge_reaction", "📋 공약 반응"),
+    ("strengths",       "💪 강점"),
+    ("weaknesses",      "⚠️ 약점"),
+    ("issues",          "🔥 이슈"),
+    ("support_trend",   "📈 지지율 추이"),
+    ("public_opinion",  "🗳️ 출마 여론"),
+    ("strategy",        "🎯 선거 전략"),
+    ("forecast",        "🔮 예측"),
+]
+
+
 def _print_verdict(verdict) -> None:
     print()
     print("=" * 60)
@@ -167,7 +180,14 @@ def _print_verdict(verdict) -> None:
         print(f"\n  {verdict_emoji} {s.candidate} ({s.party})")
         print(f"     판정: {s.verdict}  |  승률: {s.win_probability:.1%}")
         print(f"     {bar}")
-        print(f"     근거: {s.reasoning}")
+
+        if isinstance(s.reasoning, str):
+            print(f"     근거: {s.reasoning}")
+        else:
+            for field, label in _REASONING_LABELS:
+                value = getattr(s.reasoning, field, "")
+                if value:
+                    print(f"     {label}: {value}")
 
     print()
     print(f"  📝 요약: {verdict.summary}")

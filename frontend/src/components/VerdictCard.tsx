@@ -69,8 +69,14 @@ export default function VerdictCard({ verdict }: Props) {
                 <p className="text-sm text-gray-600">{c.reasoning}</p>
               ) : (
                 <div className="text-sm space-y-1 mt-1">
-                  <p className="text-green-700"><span className="font-medium">장점:</span> {c.reasoning.strengths}</p>
-                  <p className="text-red-700"><span className="font-medium">단점:</span> {c.reasoning.weaknesses}</p>
+                  <p className="text-purple-700"><span className="font-medium">지지율:</span> {c.reasoning.support_rate}</p>
+                  <p className="text-indigo-700"><span className="font-medium">공약 반응:</span> {c.reasoning.pledge_reaction}</p>
+                  <p className="text-green-700"><span className="font-medium">강점:</span> {c.reasoning.strengths}</p>
+                  <p className="text-red-700"><span className="font-medium">약점:</span> {c.reasoning.weaknesses}</p>
+                  <p className="text-orange-700"><span className="font-medium">이슈:</span> {c.reasoning.issues}</p>
+                  <p className="text-teal-700"><span className="font-medium">지지율 추이:</span> {c.reasoning.support_trend}</p>
+                  <p className="text-cyan-700"><span className="font-medium">출마 여론:</span> {c.reasoning.public_opinion}</p>
+                  <p className="text-amber-700"><span className="font-medium">선거 전략:</span> {c.reasoning.strategy}</p>
                   <p className="text-blue-700"><span className="font-medium">예측:</span> {c.reasoning.forecast}</p>
                 </div>
               )}

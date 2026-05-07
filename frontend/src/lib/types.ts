@@ -1,6 +1,12 @@
 export interface CandidateReasoning {
+  support_rate: string;
+  pledge_reaction: string;
   strengths: string;
   weaknesses: string;
+  issues: string;
+  support_trend: string;
+  public_opinion: string;
+  strategy: string;
   forecast: string;
 }
 
