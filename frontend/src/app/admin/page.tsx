@@ -2,7 +2,20 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { PipelineStatus, RAGConfig, VectorDBStats } from "@/lib/types";
+import type { District, PipelineStatus, PollEntry, RAGConfig, VectorDBStats } from "@/lib/types";
+
+interface PollRow {
+  candidate: string;
+  party: string;
+  support: string;
+}
+
+interface PollFormState {
+  district_id: string;
+  pollster: string;
+  survey_date: string;
+  rows: PollRow[];
+}
 
 export default function AdminPage() {
   const [stats, setStats] = useState<VectorDBStats | null>(null);
@@ -18,6 +31,15 @@ export default function AdminPage() {
   const [scraperType, setScraperType] = useState("all");
   const [scraperDays, setScraperDays] = useState("");
   const [purgeInput, setPurgeInput] = useState("60");
+
+  const [districts, setDistricts] = useState<District[]>([]);
+  const [pollHistory, setPollHistory] = useState<PollEntry[]>([]);
+  const [pollForm, setPollForm] = useState<PollFormState>({
+    district_id: "",
+    pollster: "",
+    survey_date: new Date().toISOString().slice(0, 10),
+    rows: [],
+  });
 
   const refresh = async () => {
     try {
@@ -38,8 +60,34 @@ export default function AdminPage() {
     }
   };
 
+  const refreshPolls = async () => {
+    try {
+      const [d, polls] = await Promise.all([
+        api.getDistricts(),
+        api.getPolls(),
+      ]);
+      setDistricts(d);
+      setPollHistory(polls.entries);
+      if (d.length > 0 && !pollForm.district_id) {
+        const first = d[0];
+        setPollForm((prev) => ({
+          ...prev,
+          district_id: first.id,
+          rows: first.candidates.map((c) => ({
+            candidate: c.name,
+            party: c.party,
+            support: "",
+          })),
+        }));
+      }
+    } catch (e) {
+      setMessage(`오류: ${(e as Error).message}`);
+    }
+  };
+
   useEffect(() => {
     refresh();
+    refreshPolls();
   }, []);
 
   const showMessage = (msg: string) => {
@@ -103,6 +151,75 @@ export default function AdminPage() {
     setLoading(false);
   };
 
+  const handleDistrictChange = (districtId: string) => {
+    const district = districts.find((d) => d.id === districtId);
+    if (!district) return;
+    setPollForm((prev) => ({
+      ...prev,
+      district_id: districtId,
+      rows: district.candidates.map((c) => ({
+        candidate: c.name,
+        party: c.party,
+        support: "",
+      })),
+    }));
+  };
+
+  const handlePollSupportChange = (index: number, value: string) => {
+    setPollForm((prev) => {
+      const rows = [...prev.rows];
+      rows[index] = { ...rows[index], support: value };
+      return { ...prev, rows };
+    });
+  };
+
+  const handleSavePolls = async () => {
+    const entries = pollForm.rows
+      .filter((r) => r.support !== "")
+      .map((r) => ({
+        district_id: pollForm.district_id,
+        candidate: r.candidate,
+        party: r.party,
+        support: parseFloat(r.support),
+        pollster: pollForm.pollster,
+        survey_date: pollForm.survey_date,
+      }));
+
+    if (entries.length === 0) {
+      showMessage("지지율을 1명 이상 입력하세요.");
+      return;
+    }
+    if (!pollForm.pollster.trim()) {
+      showMessage("조사기관을 입력하세요.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await api.savePolls(entries);
+      showMessage(`여론조사 ${entries.length}건 저장 완료. 다음 판정 시 반영됩니다.`);
+      refreshPolls();
+    } catch (e) {
+      showMessage(`오류: ${(e as Error).message}`);
+    }
+    setLoading(false);
+  };
+
+  const handleDeletePoll = async (entryId: string) => {
+    setLoading(true);
+    try {
+      await api.deletePoll(entryId);
+      refreshPolls();
+    } catch (e) {
+      showMessage(`오류: ${(e as Error).message}`);
+    }
+    setLoading(false);
+  };
+
+  const filteredHistory = pollHistory.filter(
+    (e) => !pollForm.district_id || e.district_id === pollForm.district_id
+  );
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200">
@@ -123,6 +240,128 @@ export default function AdminPage() {
             {message}
           </div>
         )}
+
+        {/* 여론조사 입력 */}
+        <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-bold text-gray-900 mb-4">여론조사 입력</h2>
+
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-900 mb-1">선거구</label>
+              <select
+                value={pollForm.district_id}
+                onChange={(e) => handleDistrictChange(e.target.value)}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-full"
+              >
+                {districts.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-900 mb-1">조사기관</label>
+              <input
+                type="text"
+                value={pollForm.pollster}
+                onChange={(e) => setPollForm((prev) => ({ ...prev, pollster: e.target.value }))}
+                placeholder="예: 한국갤럽"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-900 mb-1">조사일</label>
+              <input
+                type="date"
+                value={pollForm.survey_date}
+                onChange={(e) => setPollForm((prev) => ({ ...prev, survey_date: e.target.value }))}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 w-full"
+              />
+            </div>
+          </div>
+
+          {/* 후보별 지지율 테이블 */}
+          <div className="border border-gray-200 rounded-lg overflow-hidden mb-4">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-4 py-2 font-medium text-gray-900">후보</th>
+                  <th className="text-left px-4 py-2 font-medium text-gray-900">정당</th>
+                  <th className="text-left px-4 py-2 font-medium text-gray-900">지지율 (%)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pollForm.rows.map((row, i) => (
+                  <tr key={row.candidate} className="border-t border-gray-100">
+                    <td className="px-4 py-2 text-gray-900">{row.candidate}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.party}</td>
+                    <td className="px-4 py-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        value={row.support}
+                        onChange={(e) => handlePollSupportChange(i, e.target.value)}
+                        placeholder="0.0"
+                        className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 w-24"
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            onClick={handleSavePolls}
+            disabled={loading}
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+          >
+            적용
+          </button>
+        </section>
+
+        {/* 여론조사 이력 */}
+        <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-bold text-gray-900 mb-4">여론조사 이력</h2>
+          {filteredHistory.length === 0 ? (
+            <p className="text-sm text-gray-500">등록된 여론조사가 없습니다.</p>
+          ) : (
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium text-gray-900">조사일</th>
+                    <th className="text-left px-3 py-2 font-medium text-gray-900">조사기관</th>
+                    <th className="text-left px-3 py-2 font-medium text-gray-900">후보</th>
+                    <th className="text-left px-3 py-2 font-medium text-gray-900">정당</th>
+                    <th className="text-right px-3 py-2 font-medium text-gray-900">지지율</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredHistory.map((entry) => (
+                    <tr key={entry.id} className="border-t border-gray-100">
+                      <td className="px-3 py-2 text-gray-900">{entry.survey_date}</td>
+                      <td className="px-3 py-2 text-gray-600">{entry.pollster}</td>
+                      <td className="px-3 py-2 text-gray-900">{entry.candidate}</td>
+                      <td className="px-3 py-2 text-gray-600">{entry.party}</td>
+                      <td className="px-3 py-2 text-right text-gray-900 font-medium">{entry.support}%</td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          onClick={() => handleDeletePoll(entry.id)}
+                          className="text-red-500 hover:text-red-700 text-xs"
+                        >
+                          삭제
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
 
         {/* VectorDB 상태 */}
         <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">

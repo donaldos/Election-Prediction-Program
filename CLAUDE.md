@@ -106,7 +106,8 @@ election-radar/
 │   │   ├── milvus_repo.py           ← MilvusLiteRepository (SQLite 기반)
 │   │   ├── lancedb_repo.py          ← LanceDBRepository (파일 기반, 경량)
 │   │   ├── weaviate_repo.py         ← WeaviateRepository (Docker, GraphQL)
-│   │   └── pgvector_repo.py         ← PgvectorRepository (PostgreSQL 확장)
+│   │   ├── pgvector_repo.py         ← PgvectorRepository (PostgreSQL 확장)
+│   │   └── pinecone_repo.py        ← PineconeRepository (Pinecone Cloud, SaaS)
 │   │
 │   ├── rag/                         ← 판정 엔진 (retrieve→rerank→score)
 │   │   ├── pipeline.py              ← RAG 파이프라인 CLI
@@ -134,7 +135,7 @@ election-radar/
 │       │   ├── test_scorer.py       ← 17개
 │       │   └── test_verdict_store.py ← 11개
 │       └── vectordb/
-│           └── test_repository.py   ← 33개 (29 passed, 4 skipped)
+│           └── test_repository.py   ← 48개 (43 passed, 5 skipped)
 │
 ├── frontend/                        ← Next.js 대시보드
 │   └── src/
@@ -301,7 +302,7 @@ embedder:
     batch_size: 100
 
 vectordb:
-  type: chroma                      # qdrant | chroma | milvus_lite | lancedb | weaviate | pgvector
+  type: chroma                      # qdrant | chroma | milvus_lite | lancedb | weaviate | pgvector | pinecone
   collection: election_chunks
   params:
     persist_dir: .chroma
@@ -412,11 +413,11 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
   - [x] `load_dotenv()` 적용
   - [x] 테스트 13개 통과
 - [x] VectorRepository 구현 완료
-  - [x] 6종 구현 (qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector)
+  - [x] 7종 구현 (qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector, pinecone)
   - [x] ChromaDB 다중 필터 `$and` 래퍼 + `published_at_ts` 숫자 필터
   - [x] 결정적 ID (`sha256(article_url + chunk_index)`) — 중복 벡터 원천 차단
   - [x] 만료 정리 (`delete_older_than()`) — 오래된 벡터 물리 삭제
-  - [x] 테스트 38개 (33 + 만료 정리 5개, 29 passed, 4 skipped)
+  - [x] 테스트 48개 (43 passed, 5 skipped)
 - [x] RAG 판정 엔진 구현 완료
   - [x] `Retriever` — VectorDB 검색 → SearchResult 변환, 필터 fallback, `lookback_days` 시간 필터
   - [x] `Reranker` — 유사도 임계값 필터링 + URL 중복 제거 + 점수 정렬

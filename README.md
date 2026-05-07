@@ -73,9 +73,10 @@ election_expectation/
 │   │   └── embedder/
 │   │       ├── base.py, openai_embedder.py, bge.py, ko_simcse.py
 │   │
-│   ├── vectordb/                    # Vector DB 추상화 (6종)
+│   ├── vectordb/                    # Vector DB 추상화 (7종)
 │   │   ├── base.py, qdrant_repo.py, chroma_repo.py, milvus_repo.py
 │   │   ├── lancedb_repo.py, weaviate_repo.py, pgvector_repo.py
+│   │   └── pinecone_repo.py
 │   │
 │   ├── rag/                         # 판정 엔진 (retrieve→rerank→score)
 │   │   ├── pipeline.py, retriever.py, reranker.py, scorer.py
@@ -89,7 +90,7 @@ election_expectation/
 │       ├── app/                     # 31개 (admin 20 + scores 6 + scheduler 5)
 │       ├── ingestion/               # 108개 (scraper 33 + tagger 19 + chunker 27 + embedder 16 + pipeline 13)
 │       ├── rag/                     # 52개 (retriever 15 + reranker 9 + scorer 17 + verdict_store 11)
-│       └── vectordb/               # 38개
+│       └── vectordb/               # 48개 (43 passed, 5 skipped)
 │
 └── frontend/                        # Next.js 대시보드
     ├── Dockerfile                   # Node 20 멀티스테이지 빌드 (standalone)
@@ -226,6 +227,7 @@ npm install
 
 ```
 OPENAI_API_KEY=sk-proj-...
+PINECONE_API_KEY=pcsk_...          # Pinecone 사용 시에만 필요
 ```
 
 ##### 3. 수집 파이프라인 실행
@@ -397,22 +399,102 @@ PYTHONPATH=. pytest tests/rag/ -v
 | LanceDBRepository | `lancedb` | 없음 (파일) | 가장 경량 |
 | WeaviateRepository | `weaviate` | Docker | GraphQL, 하이브리드 검색 |
 | PgvectorRepository | `pgvector` | PostgreSQL | 기존 PG 인프라 활용 |
+| PineconeRepository | `pinecone` | Pinecone Cloud (SaaS) | 완전 관리형, API 키 필요 |
 
 ---
 
 ## RAG 판정 엔진
 
+### 전체 흐름
+
 ```
-retrieve (VectorDB 검색 + 시간 필터)
+retrieve (VectorDB 의미 검색 + 시간 필터)
   → rerank (임계값 필터링 + URL 중복 제거 + 점수 정렬)
     → score (LLM 판정 + 승리 확률 정규화)
+      → save (VerdictStore — JSONL 영속 저장)
 ```
 
-| 컴포넌트 | 설정 | 설명 |
-|---------|------|------|
-| Retriever | `top_k: 20`, `lookback_days: 14` | 후보당 검색 수, 최근 N일 필터, 필터 fallback |
-| Reranker | `min_score: 0.3`, `deduplicate: true` | 유사도 임계값, 동일 기사 중복 제거 |
-| Scorer | `provider: openai`, `model: gpt-4o` | LLM 판정 (openai / anthropic), `json_object` 모드 |
+### Step 1: Retrieve — 후보별 의미 검색
+
+Retriever가 **후보별로 쿼리를 생성**하여 VectorDB에서 cosine similarity 기반 의미 검색을 수행합니다.
+
+**쿼리 생성 규칙**: `"{선거구명} {후보명} 선거 판세"`
+
+예시 (부산북구갑):
+
+| 후보 | 생성 쿼리 | 필터 |
+|------|----------|------|
+| 하정우 | `"부산북구갑 하정우 선거 판세"` | `district_id=busan_bukgu_gap, candidate=하정우` |
+| 한동훈 | `"부산북구갑 한동훈 선거 판세"` | `district_id=busan_bukgu_gap, candidate=한동훈` |
+| 박민식 | `"부산북구갑 박민식 선거 판세"` | `district_id=busan_bukgu_gap, candidate=박민식` |
+
+각 쿼리는 임베딩 벡터로 변환된 뒤 VectorDB에 전송됩니다. 메타데이터 필터(`district_id`, `candidate`)도 함께 적용되어 해당 후보 관련 기사만 검색합니다. 필터 검색 결과가 0건이면 필터 없이 재검색합니다.
+
+검색 후 `lookback_days` 설정에 따라 최근 N일 이내 기사만 남기고, 후보별 결과를 중복 제거하여 통합합니다.
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `top_k` | 20 | 후보당 최대 검색 수 |
+| `lookback_days` | 14 | 최근 N일 기사만 사용 (null이면 전체) |
+
+### Step 2: Rerank — 필터링 및 정렬
+
+Reranker가 통합된 검색 결과를 정제합니다.
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `min_score` | 0.3 | 유사도 임계값 미만 제거 |
+| `deduplicate` | true | 동일 기사 URL 중복 제거 (최고 점수만 유지) |
+
+### Step 3: Score — LLM 판정
+
+Reranker를 통과한 청크들이 LLM에 전달되어 판정이 이루어집니다.
+
+**System Prompt** (역할 + 출력 형식):
+```
+당신은 한국 선거 판세 분석 전문가입니다.
+
+판정 기준:
+- "우세": 여론조사 선두, 긍정적 언론 보도 다수, 지지 기반 강화 징후
+- "균형": 오차범위 내 접전, 혼재된 신호
+- "열세": 여론조사 하위, 부정적 보도, 지지 기반 약화 징후
+
+규칙:
+- 모든 후보의 win_probability 합계는 반드시 1.0
+- reasoning은 한국어로 5~7문장, 근거를 구체적으로 제시
+
+JSON 형식:
+{candidates: [{candidate, verdict, win_probability, reasoning}], summary, strategy}
+```
+
+**User Prompt** (실제 데이터):
+```
+## 선거구: 부산북구갑
+
+## 후보 목록
+- 하정우 (더불어민주당)
+- 한동훈 (무소속)
+- 박민식 (국민의힘)
+
+## 수집된 뉴스 청크 (15건)
+
+[1] 한동훈·하정우 양강 구도 (naver_news, 2026-05-04) — score: 0.892
+    기사 본문 300자 미리보기...
+
+[2] 하정우 후보 지지율 상승세 (naver_news, 2026-05-03) — score: 0.853
+    기사 본문 300자 미리보기...
+...
+
+## 요청
+위 뉴스를 종합 분석하여 각 후보의 verdict, win_probability, reasoning을
+JSON으로 출력하세요.
+```
+
+LLM은 각 청크의 **제목, 출처, 날짜, 유사도 스코어, 본문 미리보기(300자)**를 근거로 판정합니다. 응답이 JSON으로 파싱된 후 확률 합이 1.0이 아니면 자동 정규화됩니다.
+
+### Step 4: Save — 판정 결과 저장
+
+판정 결과는 `VerdictStore`를 통해 `data/verdicts/{district_id}.jsonl`에 누적 저장되며, API를 통해 최신/이력/시계열 데이터로 조회할 수 있습니다.
 
 ### Scorer 구현체
 
@@ -425,7 +507,7 @@ retrieve (VectorDB 검색 + 시간 필터)
 
 | 컴포넌트 | WARNING | INFO | DEBUG |
 |---------|---------|------|-------|
-| Retriever | 검색 결과 변환 실패 | fallback 재검색, 시간 필터 적용, 검색 완료 건수 | 개별 결과 (id, score, title) |
+| Retriever | 검색 결과 변환 실패 | 쿼리 생성, 임베딩 완료, VectorDB 검색 건수, 시간 필터, 개별 결과 (score/title/source), 후보별 신규/중복 건수 | - |
 | Reranker | 빈 입력 | 재정렬 완료 (전후 건수) | 임계값/중복 제거 건수 |
 | Scorer | 0건 입력, 파싱 실패, 확률 합 ≠ 1.0 | LLM 요청/응답 (소요 시간), 판정 완료 | 프롬프트/응답 전문 |
 
@@ -570,7 +652,7 @@ curl -X POST http://localhost:8000/api/v1/admin/vectordb/purge \
 - [x] Embedder 구현 완료 (3종: openai, bge_m3, ko_simcse)
 - [x] 기사 → 후보/선거구 자동 태깅 (키워드 매칭 기반)
 - [x] IngestionPipeline 연결 (scrape→tag→chunk→embed→store)
-- [x] VectorDB Repository 구현 완료 (6종: qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector)
+- [x] VectorDB Repository 구현 완료 (7종: qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector, pinecone)
 - [x] VectorDB 안전장치 (결정적 ID, 시간 필터, 만료 정리)
 - [x] RAG 판정 엔진 구현 완료 (Retriever, Reranker, Scorer)
 - [x] OpenAIScorer (GPT-4o) + AnthropicScorer (Claude)
@@ -578,7 +660,7 @@ curl -X POST http://localhost:8000/api/v1/admin/vectordb/purge \
 - [x] FastAPI 관리자 API (파이프라인 실행, VectorDB 관리, 설정 변경)
 - [x] 판세 결과 API (최신/이력/시계열 조회, 판정 실행)
 - [x] APScheduler 연동 (cron 주기 자동 수집 + 판정)
-- [x] 테스트 215개 passed, 14개 skipped
+- [x] 테스트 225개 passed, 15개 skipped
 - [x] TypeScript 대시보드 (Next.js 16 + Recharts)
 - [x] CORS 미들웨어 (프론트엔드 → 백엔드 API 연동, `CORS_ORIGINS` 환경변수 지원)
 - [x] Docker 배포 (백엔드 Dockerfile + 프론트엔드 멀티스테이지 Dockerfile + docker-compose.yml)

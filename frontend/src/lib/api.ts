@@ -1,6 +1,7 @@
 import type {
   District,
   PipelineStatus,
+  PollList,
   RAGConfig,
   TimeSeries,
   Verdict,
@@ -72,4 +73,27 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
+
+  getPolls: (districtId?: string) => {
+    const q = districtId ? `?district_id=${districtId}` : "";
+    return fetchJSON<PollList>(`/admin/polls${q}`);
+  },
+
+  savePolls: (entries: { district_id: string; candidate: string; party: string; support: number; pollster: string; survey_date: string }[]) =>
+    fetchJSON<PollList>("/admin/polls", {
+      method: "POST",
+      body: JSON.stringify({ entries }),
+    }),
+
+  deletePoll: (entryId: string) =>
+    fetchJSON<{ deleted: number; message: string }>(`/admin/polls/${entryId}`, {
+      method: "DELETE",
+    }),
+
+  deleteAllPolls: (districtId?: string) => {
+    const q = districtId ? `?district_id=${districtId}` : "";
+    return fetchJSON<{ deleted: number; message: string }>(`/admin/polls${q}`, {
+      method: "DELETE",
+    });
+  },
 };

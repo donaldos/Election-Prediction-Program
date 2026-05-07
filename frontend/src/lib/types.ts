@@ -58,3 +58,19 @@ export interface RAGConfig {
   scorer: Record<string, string | number>;
   purge_days: number | null;
 }
+
+export interface PollEntry {
+  id: string;
+  district_id: string;
+  candidate: string;
+  party: string;
+  support: number;
+  pollster: string;
+  survey_date: string;
+  created_at: string;
+}
+
+export interface PollList {
+  count: number;
+  entries: PollEntry[];
+}
