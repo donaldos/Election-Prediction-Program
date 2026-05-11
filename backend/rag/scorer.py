@@ -15,10 +15,12 @@ SYSTEM_PROMPT = """\
 당신은 한국 선거 판세 분석 전문가입니다.
 제공된 뉴스 기사 청크와 여론조사 데이터를 분석하여 각 후보의 판세를 판정하고, 후보별로 9가지 분석 항목을 도출합니다.
 
-판정 기준:
-- "우세": 여론조사 선두, 긍정적 언론 보도 다수, 지지 기반 강화 징후
-- "균형": 오차범위 내 접전, 혼재된 신호
-- "열세": 여론조사 하위, 부정적 보도, 지지 기반 약화 징후
+판정 기준 (여론조사 오차범위 ±3%p 적용):
+- 여론조사 지지율은 ±3%p의 오차범위를 가짐. 두 후보 간 격차가 6%p 이내이면 통계적으로 동률(오차범위 중첩)로 간주
+- "우세": 1위 후보와의 격차가 6%p 초과로 선두이며, 긍정적 언론 보도 다수, 지지 기반 강화 징후
+- "균형": 1위 후보와의 격차가 6%p 이내 (오차범위 중첩 구간), 혼재된 신호
+- "열세": 1위 후보와의 격차가 6%p 초과로 뒤처지며, 부정적 보도, 지지 기반 약화 징후
+- 여론조사 수치만으로 판정하지 말고, 오차범위 내에서는 기사 논조·추세·이슈 등을 종합하여 최종 판정
 
 추가 분석:
 - --district pyeongtaek_b 일 경우, 김용남: 현재 판세를 기반으로 지지율을 끌어올리기 위한 구체적 전략 제시
@@ -53,6 +55,107 @@ SYSTEM_PROMPT = """\
 }"""
 
 
+_CATEGORY_ORDER = [
+    "지지율", "공약 반응", "강점", "약점",
+    "이슈", "지지율 추이", "출마 여론", "선거 전략",
+]
+
+
+def flatten_grouped_chunks(
+    grouped: dict[str, dict[str, list[SearchResult]]],
+) -> list[SearchResult]:
+    """그룹별 청크를 고유한 평탄 리스트로 변환."""
+    seen: set[str] = set()
+    result: list[SearchResult] = []
+    for categories in grouped.values():
+        for chunks in categories.values():
+            for chunk in chunks:
+                if chunk.id not in seen:
+                    result.append(chunk)
+                    seen.add(chunk.id)
+    return result
+
+
+MAX_CHUNKS_PER_CATEGORY = 3
+TEXT_PREVIEW_LEN = 200
+
+
+def _format_chunks_section(chunks: list[SearchResult], limit: int = MAX_CHUNKS_PER_CATEGORY) -> list[str]:
+    lines: list[str] = []
+    for i, chunk in enumerate(chunks[:limit], 1):
+        lines.append(
+            f"[{i}] {chunk.title} ({chunk.source}, {chunk.published_at:%Y-%m-%d}) "
+            f"— score: {chunk.score:.3f}"
+        )
+        text_preview = chunk.text[:TEXT_PREVIEW_LEN].replace("\n", " ")
+        lines.append(f"    {text_preview}")
+        lines.append("")
+    return lines
+
+
+def _build_user_prompt_grouped(
+    grouped: dict[str, dict[str, list[SearchResult]]],
+    district: dict,
+) -> str:
+    lines = [f"## 선거구: {district['name']}\n"]
+
+    lines.append("## 후보 목록")
+    for cand in district.get("candidates", []):
+        lines.append(f"- {cand['name']} ({cand['party']})")
+    lines.append("")
+
+    from rag.poll_store import PollStore
+    poll_summary = PollStore().get_latest_summary(district["id"])
+    if poll_summary:
+        lines.append("## 최신 여론조사 (오차범위 ±3%p)")
+        lines.append(f"조사기관: {poll_summary.pollster}, 조사일: {poll_summary.survey_date}")
+        for c in poll_summary.candidates:
+            low = round(c.support - 3.0, 1)
+            high = round(c.support + 3.0, 1)
+            lines.append(f"- {c.candidate} ({c.party}): {c.support}% (오차범위: {low}%~{high}%)")
+        lines.append("※ 두 후보 간 격차 6%p 이내는 통계적 동률 (오차범위 중첩)")
+        lines.append("")
+
+    common = grouped.get("_common", {})
+    if common:
+        lines.append("## 공통 판세 자료\n")
+        for category in sorted(common.keys()):
+            chunks = common[category]
+            lines.append(f"### {category} (상위 {min(len(chunks), MAX_CHUNKS_PER_CATEGORY)}/{len(chunks)}건)")
+            lines.extend(_format_chunks_section(chunks))
+
+    lines.append("## 후보별 분석 자료\n")
+    for cand in district.get("candidates", []):
+        name = cand["name"]
+        party = cand["party"]
+        candidate_data = grouped.get(name, {})
+        if not candidate_data:
+            continue
+
+        lines.append(f"### {name} ({party})\n")
+
+        for category in _CATEGORY_ORDER:
+            chunks = candidate_data.get(category, [])
+            if not chunks:
+                continue
+            lines.append(f"#### {category} (상위 {min(len(chunks), MAX_CHUNKS_PER_CATEGORY)}/{len(chunks)}건)")
+            lines.extend(_format_chunks_section(chunks))
+
+        for category, chunks in candidate_data.items():
+            if category not in _CATEGORY_ORDER and chunks:
+                lines.append(f"#### {category} (상위 {min(len(chunks), MAX_CHUNKS_PER_CATEGORY)}/{len(chunks)}건)")
+                lines.extend(_format_chunks_section(chunks))
+
+    lines.append(
+        "## 요청\n"
+        "위 분석 항목별로 분류된 근거를 참고하여 각 후보의 verdict, win_probability, reasoning을 "
+        "JSON으로 출력하세요.\n"
+        "각 reasoning 필드(support_rate, pledge_reaction, strengths 등)는 해당 분석 항목에 "
+        "배치된 근거 기사를 우선적으로 참고하여 구체적으로 작성하세요."
+    )
+    return "\n".join(lines)
+
+
 def _build_user_prompt(
     chunks: list[SearchResult],
     district: dict,
@@ -67,10 +170,13 @@ def _build_user_prompt(
     from rag.poll_store import PollStore
     poll_summary = PollStore().get_latest_summary(district["id"])
     if poll_summary:
-        lines.append("## 최신 여론조사")
+        lines.append("## 최신 여론조사 (오차범위 ±3%p)")
         lines.append(f"조사기관: {poll_summary.pollster}, 조사일: {poll_summary.survey_date}")
         for c in poll_summary.candidates:
-            lines.append(f"- {c.candidate} ({c.party}): {c.support}%")
+            low = round(c.support - 3.0, 1)
+            high = round(c.support + 3.0, 1)
+            lines.append(f"- {c.candidate} ({c.party}): {c.support}% (오차범위: {low}%~{high}%)")
+        lines.append("※ 두 후보 간 격차 6%p 이내는 통계적 동률 (오차범위 중첩)")
         lines.append("")
 
     lines.append(f"## 수집된 뉴스 청크 ({len(chunks)}건)\n")
@@ -169,16 +275,24 @@ class AbstractScorer(ABC):
         self,
         chunks: list[SearchResult],
         district: dict,
+        *,
+        grouped_chunks: dict[str, dict[str, list[SearchResult]]] | None = None,
     ) -> DailyVerdict:
-        if not chunks:
+        if grouped_chunks is not None:
+            effective_chunks = flatten_grouped_chunks(grouped_chunks)
+            user_prompt = _build_user_prompt_grouped(grouped_chunks, district)
+        else:
+            effective_chunks = chunks
+            user_prompt = _build_user_prompt(chunks, district)
+
+        if not effective_chunks:
             logger.warning("검색 결과 0건 — 균등 확률 배분")
             return self._empty_verdict(district)
 
-        user_prompt = _build_user_prompt(chunks, district)
-
         logger.info(
-            "[%s] LLM 판정 요청 — %s, 청크 %d건",
-            self.name, district["name"], len(chunks),
+            "[%s] LLM 판정 요청 — %s, 청크 %d건%s",
+            self.name, district["name"], len(effective_chunks),
+            " (그룹별 구조)" if grouped_chunks else "",
         )
         logger.debug("[%s] 프롬프트:\n%s", self.name, user_prompt)
 
@@ -189,7 +303,7 @@ class AbstractScorer(ABC):
         logger.debug("[%s] LLM 응답:\n%s", self.name, raw_response)
 
         try:
-            verdict = _parse_llm_response(raw_response, district, chunks)
+            verdict = _parse_llm_response(raw_response, district, effective_chunks)
         except (json.JSONDecodeError, KeyError, ValueError, Exception) as e:
             logger.warning("[%s] LLM 응답 파싱 실패: %s — 균등 확률 배분", self.name, e)
             logger.debug("[%s] 파싱 실패 원문:\n%s", self.name, raw_response)

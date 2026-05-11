@@ -294,19 +294,20 @@ def _run_verdict_mode(args, config: dict) -> None:
 
     logger.info("VectorDB 저장 건수: %d", vector_repo.count())
 
-    logger.info("선거구 통합 검색 시작 — %s", district["name"])
-    all_results = retriever.retrieve_for_district(district)
-    query = f"{district['name']} 선거 판세"
-    all_results = reranker.rerank(query, all_results)
+    logger.info("선거구 그룹별 검색 시작 — %s", district["name"])
+    grouped = retriever.retrieve_for_district_grouped(district)
+    grouped = reranker.rerank_grouped(grouped)
 
-    _print_chunks(all_results, district)
+    from rag.scorer import flatten_grouped_chunks
+    flat_chunks = flatten_grouped_chunks(grouped)
+    _print_chunks(flat_chunks, district)
 
     if args.skip_score:
         logger.info("--skip-score 지정 — LLM 판정 생략")
         return
 
     scorer = _build_scorer(config)
-    verdict = scorer.score(all_results, district)
+    verdict = scorer.score(flat_chunks, district, grouped_chunks=grouped)
 
     from rag.verdict_store import VerdictStore
     store = VerdictStore()

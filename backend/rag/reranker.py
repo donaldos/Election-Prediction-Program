@@ -48,6 +48,33 @@ class Reranker:
         )
         return filtered
 
+    def rerank_grouped(
+        self,
+        grouped: dict[str, dict[str, list[SearchResult]]],
+    ) -> dict[str, dict[str, list[SearchResult]]]:
+        """그룹별(후보 → 분석 항목)로 재정렬 및 필터링."""
+        result: dict[str, dict[str, list[SearchResult]]] = {}
+        total_before = 0
+        total_after = 0
+
+        for group_key, categories in grouped.items():
+            result[group_key] = {}
+            for category, chunks in categories.items():
+                total_before += len(chunks)
+                filtered = [r for r in chunks if r.score >= self._min_score]
+                if self._deduplicate:
+                    filtered = self._deduplicate_by_url(filtered)
+                filtered.sort(key=lambda r: r.score, reverse=True)
+                total_after += len(filtered)
+                if filtered:
+                    result[group_key][category] = filtered
+
+        logger.info(
+            "그룹별 재정렬 완료 — %d건 → %d건 (min_score=%.2f, dedup=%s)",
+            total_before, total_after, self._min_score, self._deduplicate,
+        )
+        return result
+
     @staticmethod
     def _deduplicate_by_url(results: list[SearchResult]) -> list[SearchResult]:
         best_by_url: dict[str, SearchResult] = {}

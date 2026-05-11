@@ -149,15 +149,17 @@ def run_verdict(district_id: str, req: VerdictRunRequest | None = None):
     retriever = _build_retriever(config, embedder, vector_repo)
     reranker = _build_reranker(config)
 
-    all_results = retriever.retrieve_for_district(district)
-    query = f"{district['name']} 선거 판세"
-    all_results = reranker.rerank(query, all_results)
+    grouped = retriever.retrieve_for_district_grouped(district)
+    grouped = reranker.rerank_grouped(grouped)
 
     if req and req.skip_score:
         raise HTTPException(status_code=400, detail="skip_score=true — 판정 결과를 생성할 수 없습니다.")
 
+    from rag.scorer import flatten_grouped_chunks
+    flat_chunks = flatten_grouped_chunks(grouped)
+
     scorer = _build_scorer(config)
-    verdict = scorer.score(all_results, district)
+    verdict = scorer.score(flat_chunks, district, grouped_chunks=grouped)
 
     from rag.verdict_store import VerdictStore
     store = VerdictStore()

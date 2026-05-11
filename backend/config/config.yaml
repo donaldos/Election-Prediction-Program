@@ -56,6 +56,13 @@ scrapers:
       request_delay_sec: 1.5          # robots.txt 준수
       lookback_days: 7                # date_from 미지정 시 오늘 기준 N일 전부터 검색
 
+  naver_election:
+    type: naver_election
+    params:
+      max_articles_per_run: 100
+      request_delay_sec: 1.5
+      lookback_days: 7
+
   political:
     type: political
     params:

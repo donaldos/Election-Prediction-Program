@@ -13,6 +13,26 @@ logger = logging.getLogger(__name__)
 
 QUERY_TEMPLATES_PATH = Path(__file__).resolve().parent.parent / "config" / "query_templates.json"
 
+_CATEGORY_KEYWORDS: list[tuple[str, str]] = [
+    ("지지율 추이", "지지율 추이"),
+    ("출마 여론", "출마 여론"),
+    ("선거 전략", "선거 전략"),
+    ("공약", "공약 반응"),
+    ("지지율", "지지율"),
+    ("강점", "강점"),
+    ("약점", "약점"),
+    ("이슈", "이슈"),
+    ("판세", "판세"),
+    ("여론조사", "여론조사"),
+]
+
+
+def _detect_category(query: str) -> str:
+    for keyword, category in _CATEGORY_KEYWORDS:
+        if keyword in query:
+            return category
+    return "기타"
+
 
 def _load_query_templates() -> dict:
     if not QUERY_TEMPLATES_PATH.exists():
@@ -191,3 +211,77 @@ class Retriever:
         )
         logger.info("=" * 60)
         return all_results
+
+    def retrieve_for_district_grouped(
+        self, district: dict,
+    ) -> dict[str, dict[str, list[SearchResult]]]:
+        """선거구의 모든 후보에 대해 분석 항목별로 그룹핑된 검색 결과 반환."""
+        grouped: dict[str, dict[str, list[SearchResult]]] = {}
+
+        templates = _load_query_templates()
+        district_templates = templates.get(district["id"], {})
+        common_queries = district_templates.get("_common", [])
+
+        logger.info("=" * 60)
+        logger.info(
+            "선거구 그룹별 검색 시작 — %s (후보 %d명)",
+            district["name"], len(district.get("candidates", [])),
+        )
+        logger.info("=" * 60)
+
+        if common_queries:
+            grouped["_common"] = {}
+            logger.info("")
+            logger.info("▶ 공통 쿼리 (%d건)", len(common_queries))
+            for query in common_queries:
+                category = _detect_category(query)
+                results = self.retrieve(
+                    query=query,
+                    district_id=district["id"],
+                    candidate=None,
+                )
+                grouped["_common"][category] = results
+                logger.info("  [%s] %d건", category, len(results))
+
+        for cand in district.get("candidates", []):
+            name = cand["name"]
+            party = cand.get("party", "")
+
+            candidate_queries = district_templates.get(name)
+            if candidate_queries is None:
+                candidate_queries = [f"{district['name']} {name} 선거 판세"]
+
+            grouped[name] = {}
+            logger.info("")
+            logger.info("▶ 후보: %s (%s) — 쿼리 %d건", name, party, len(candidate_queries))
+
+            for query in candidate_queries:
+                category = _detect_category(query)
+                results = self.retrieve(
+                    query=query,
+                    district_id=district["id"],
+                    candidate=name,
+                )
+                grouped[name][category] = results
+                logger.info("  [%s] %d건", category, len(results))
+
+        total = sum(
+            len(chunks)
+            for categories in grouped.values()
+            for chunks in categories.values()
+        )
+        unique_ids = {
+            c.id
+            for categories in grouped.values()
+            for chunks in categories.values()
+            for c in chunks
+        }
+
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(
+            "선거구 그룹별 검색 완료 — %s, 총 %d건 (고유 %d건)",
+            district["name"], total, len(unique_ids),
+        )
+        logger.info("=" * 60)
+        return grouped

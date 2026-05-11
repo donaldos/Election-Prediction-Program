@@ -135,6 +135,12 @@ class IngestionPipeline:
             logger.info("=" * 50)
             all_articles.extend(self._run_naver(keywords, date_from, date_to))
 
+        if scraper_name in ("naver_election", "all"):
+            logger.info("=" * 50)
+            logger.info("네이버 선거 페이지 수집 시작")
+            logger.info("=" * 50)
+            all_articles.extend(self._run_naver_election(keywords, date_from, date_to))
+
         if scraper_name in ("political", "all"):
             logger.info("=" * 50)
             logger.info("정치 전문 매체 수집 시작")
@@ -152,6 +158,17 @@ class IngestionPipeline:
             max_articles_per_run=params.get("max_articles_per_run", 50),
             request_delay_sec=params.get("request_delay_sec", 1.5),
             lookback_days=params.get("lookback_days", 2),
+        )
+        return scraper.scrape(keywords=keywords, date_from=date_from, date_to=date_to)
+
+    def _run_naver_election(self, keywords: list[str], date_from: date, date_to: date) -> list[RawArticle]:
+        from ingestion.scraper.naver_election import NaverElectionScraper
+
+        cfg = self._config.get("scrapers", {}).get("naver_election", {}).get("params", {})
+        scraper = NaverElectionScraper(
+            max_articles_per_run=cfg.get("max_articles_per_run", 100),
+            request_delay_sec=cfg.get("request_delay_sec", 1.5),
+            lookback_days=cfg.get("lookback_days", 7),
         )
         return scraper.scrape(keywords=keywords, date_from=date_from, date_to=date_to)
 
