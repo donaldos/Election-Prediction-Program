@@ -149,12 +149,18 @@ vectordb:
 # ------------------------------------------------------------
 rag:
   retriever:
-    top_k: 20                          # 후보당 검색 수
+    top_k: 20                          # 기본 검색 수 (단발 질의, fallback)
+    top_k_common: 10                   # 공통 쿼리 (판세, 여론조사)
+    top_k_candidate: 5                 # 후보별 세부 쿼리 (지지율, 공약, 강점...)
     lookback_days: 14                  # 최근 N일 기사만 검색 (null이면 전체)
 
   reranker:
     min_score: 0.3                     # 유사도 임계값
     deduplicate: true                  # 동일 기사 중복 제거
+    cross_encoder:
+      enabled: true                   # true로 변경 시 Cross-encoder 재정렬 활성화
+      model: BAAI/bge-reranker-v2-m3   # 한국어 지원 Cross-encoder (~560MB, 최초 실행 시 다운로드)
+      top_n: 10                        # 그룹당 Cross-encoder 재정렬 후 상위 N건 유지
 
   purge_days: 60                       # N일 이전 벡터 자동 삭제 (null이면 비활성)
 

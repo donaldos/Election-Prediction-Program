@@ -48,11 +48,15 @@ class Retriever:
         embedder: AbstractEmbedder,
         vector_repo: AbstractVectorRepository,
         top_k: int = 20,
+        top_k_common: int | None = None,
+        top_k_candidate: int | None = None,
         lookback_days: int | None = None,
     ) -> None:
         self._embedder = embedder
         self._repo = vector_repo
         self._top_k = top_k
+        self._top_k_common = top_k_common or top_k
+        self._top_k_candidate = top_k_candidate or top_k
         self._lookback_days = lookback_days
 
     def _cutoff_date(self) -> datetime | None:
@@ -86,11 +90,14 @@ class Retriever:
         query: str,
         district_id: str,
         candidate: str | None = None,
+        *,
+        top_k: int | None = None,
     ) -> list[SearchResult]:
+        effective_top_k = top_k or self._top_k
         logger.info("━" * 50)
         logger.info("의미 검색 시작 — query='%s'", query)
         logger.info("  필터: district_id=%s, candidate=%s", district_id, candidate or "(전체)")
-        logger.info("  파라미터: top_k=%d, lookback_days=%s", self._top_k, self._lookback_days or "전체")
+        logger.info("  파라미터: top_k=%d, lookback_days=%s", effective_top_k, self._lookback_days or "전체")
 
         query_vector = self._embedder.embed_query(query)
         logger.info("  쿼리 임베딩 완료 — 벡터 차원=%d", len(query_vector))
@@ -101,7 +108,7 @@ class Retriever:
 
         raw_results = self._repo.search(
             query_vector=query_vector,
-            top_k=self._top_k,
+            top_k=effective_top_k,
             filters=filters,
         )
         logger.info("  VectorDB 검색 결과: %d건 (필터 적용)", len(raw_results))
@@ -110,7 +117,7 @@ class Retriever:
             logger.info("  필터 검색 결과 0건 — 필터 없이 재검색")
             raw_results = self._repo.search(
                 query_vector=query_vector,
-                top_k=self._top_k,
+                top_k=effective_top_k,
                 filters=None,
             )
             logger.info("  VectorDB 재검색 결과: %d건 (필터 없음)", len(raw_results))
@@ -171,14 +178,20 @@ class Retriever:
                     new_count += 1
             return new_count
 
+        logger.info(
+            "  top_k: common=%d, candidate=%d",
+            self._top_k_common, self._top_k_candidate,
+        )
+
         if common_queries:
             logger.info("")
-            logger.info("▶ 공통 쿼리 (%d건)", len(common_queries))
+            logger.info("▶ 공통 쿼리 (%d건, top_k=%d)", len(common_queries), self._top_k_common)
             for query in common_queries:
                 results = self.retrieve(
                     query=query,
                     district_id=district["id"],
                     candidate=None,
+                    top_k=self._top_k_common,
                 )
                 new_count = _add_results(results)
                 logger.info("  신규 %d건 추가 (중복 %d건 제외)", new_count, len(results) - new_count)
@@ -192,13 +205,14 @@ class Retriever:
                 candidate_queries = [f"{district['name']} {name} 선거 판세"]
 
             logger.info("")
-            logger.info("▶ 후보: %s (%s) — 쿼리 %d건", name, party, len(candidate_queries))
+            logger.info("▶ 후보: %s (%s) — 쿼리 %d건 (top_k=%d)", name, party, len(candidate_queries), self._top_k_candidate)
 
             for query in candidate_queries:
                 results = self.retrieve(
                     query=query,
                     district_id=district["id"],
                     candidate=name,
+                    top_k=self._top_k_candidate,
                 )
                 new_count = _add_results(results)
                 logger.info("  신규 %d건 추가 (중복 %d건 제외)", new_count, len(results) - new_count)
@@ -228,17 +242,22 @@ class Retriever:
             district["name"], len(district.get("candidates", [])),
         )
         logger.info("=" * 60)
+        logger.info(
+            "  top_k: common=%d, candidate=%d",
+            self._top_k_common, self._top_k_candidate,
+        )
 
         if common_queries:
             grouped["_common"] = {}
             logger.info("")
-            logger.info("▶ 공통 쿼리 (%d건)", len(common_queries))
+            logger.info("▶ 공통 쿼리 (%d건, top_k=%d)", len(common_queries), self._top_k_common)
             for query in common_queries:
                 category = _detect_category(query)
                 results = self.retrieve(
                     query=query,
                     district_id=district["id"],
                     candidate=None,
+                    top_k=self._top_k_common,
                 )
                 grouped["_common"][category] = results
                 logger.info("  [%s] %d건", category, len(results))
@@ -253,7 +272,7 @@ class Retriever:
 
             grouped[name] = {}
             logger.info("")
-            logger.info("▶ 후보: %s (%s) — 쿼리 %d건", name, party, len(candidate_queries))
+            logger.info("▶ 후보: %s (%s) — 쿼리 %d건 (top_k=%d)", name, party, len(candidate_queries), self._top_k_candidate)
 
             for query in candidate_queries:
                 category = _detect_category(query)
@@ -261,6 +280,7 @@ class Retriever:
                     query=query,
                     district_id=district["id"],
                     candidate=name,
+                    top_k=self._top_k_candidate,
                 )
                 grouped[name][category] = results
                 logger.info("  [%s] %d건", category, len(results))

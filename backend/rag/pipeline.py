@@ -74,6 +74,8 @@ def _build_retriever(config: dict, embedder, vector_repo):
         embedder=embedder,
         vector_repo=vector_repo,
         top_k=rag_cfg.get("top_k", 20),
+        top_k_common=rag_cfg.get("top_k_common"),
+        top_k_candidate=rag_cfg.get("top_k_candidate"),
         lookback_days=rag_cfg.get("lookback_days"),
     )
 
@@ -82,9 +84,13 @@ def _build_reranker(config: dict):
     from rag.reranker import Reranker
 
     rag_cfg = config.get("rag", {}).get("reranker", {})
+    ce_cfg = rag_cfg.get("cross_encoder", {})
+    ce_model = ce_cfg.get("model") if ce_cfg.get("enabled") else None
     return Reranker(
         min_score=rag_cfg.get("min_score", 0.3),
         deduplicate=rag_cfg.get("deduplicate", True),
+        cross_encoder_model=ce_model,
+        cross_encoder_top_n=ce_cfg.get("top_n"),
     )
 
 
@@ -296,7 +302,7 @@ def _run_verdict_mode(args, config: dict) -> None:
 
     logger.info("선거구 그룹별 검색 시작 — %s", district["name"])
     grouped = retriever.retrieve_for_district_grouped(district)
-    grouped = reranker.rerank_grouped(grouped)
+    grouped = reranker.rerank_grouped(grouped, district_name=district["name"])
 
     from rag.scorer import flatten_grouped_chunks
     flat_chunks = flatten_grouped_chunks(grouped)

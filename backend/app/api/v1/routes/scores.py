@@ -150,7 +150,7 @@ def run_verdict(district_id: str, req: VerdictRunRequest | None = None):
     reranker = _build_reranker(config)
 
     grouped = retriever.retrieve_for_district_grouped(district)
-    grouped = reranker.rerank_grouped(grouped)
+    grouped = reranker.rerank_grouped(grouped, district_name=district["name"])
 
     if req and req.skip_score:
         raise HTTPException(status_code=400, detail="skip_score=true — 판정 결과를 생성할 수 없습니다.")

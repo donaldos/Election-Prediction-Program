@@ -20,6 +20,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+reranker = [
+    "sentence-transformers>=3.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",

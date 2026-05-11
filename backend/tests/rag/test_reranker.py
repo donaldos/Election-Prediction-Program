@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from models.score import SearchResult
@@ -143,3 +145,122 @@ class TestRerankerIntegrated:
 
         assert len(filtered) == 3
         assert [r.id for r in filtered] == ["5", "2", "3"]
+
+
+class TestCrossEncoderRerank:
+
+    def _mock_cross_encoder(self):
+        mock_ce = MagicMock()
+        mock_ce.predict.return_value = np.array([1.5, -0.5, 3.0])
+        return mock_ce
+
+    @patch("rag.reranker.Reranker._load_cross_encoder")
+    def test_cross_encoder_reorders_by_ce_score(self, mock_load):
+        mock_ce = self._mock_cross_encoder()
+        mock_load.return_value = mock_ce
+
+        results = [
+            _make_result(id="1", score=0.9, text="청크A"),
+            _make_result(id="2", score=0.8, text="청크B"),
+            _make_result(id="3", score=0.7, text="청크C"),
+        ]
+        reranker = Reranker(
+            min_score=0.0, deduplicate=False,
+            cross_encoder_model="mock-model",
+        )
+        filtered = reranker.rerank("평택을 판세", results)
+
+        assert [r.id for r in filtered] == ["3", "1", "2"]
+        mock_ce.predict.assert_called_once()
+        pairs = mock_ce.predict.call_args[0][0]
+        assert len(pairs) == 3
+        assert pairs[0] == ("평택을 판세", "청크A")
+
+    @patch("rag.reranker.Reranker._load_cross_encoder")
+    def test_cross_encoder_top_n_limits_results(self, mock_load):
+        mock_ce = MagicMock()
+        mock_ce.predict.return_value = np.array([3.0, 1.0, 2.0, 0.5])
+        mock_load.return_value = mock_ce
+
+        results = [
+            _make_result(id="1", score=0.9),
+            _make_result(id="2", score=0.8),
+            _make_result(id="3", score=0.7),
+            _make_result(id="4", score=0.6),
+        ]
+        reranker = Reranker(
+            min_score=0.0, deduplicate=False,
+            cross_encoder_model="mock-model",
+            cross_encoder_top_n=2,
+        )
+        filtered = reranker.rerank("질의", results)
+
+        assert len(filtered) == 2
+        assert [r.id for r in filtered] == ["1", "3"]
+
+    @patch("rag.reranker.Reranker._load_cross_encoder")
+    def test_cross_encoder_scores_are_sigmoid_normalized(self, mock_load):
+        mock_ce = MagicMock()
+        mock_ce.predict.return_value = np.array([0.0, 5.0])
+        mock_load.return_value = mock_ce
+
+        results = [
+            _make_result(id="1", score=0.9),
+            _make_result(id="2", score=0.8),
+        ]
+        reranker = Reranker(
+            min_score=0.0, deduplicate=False,
+            cross_encoder_model="mock-model",
+        )
+        filtered = reranker.rerank("질의", results)
+
+        assert filtered[0].id == "2"
+        assert abs(filtered[0].score - 0.9933) < 0.01
+        assert filtered[1].id == "1"
+        assert abs(filtered[1].score - 0.5) < 0.01
+
+    def test_no_cross_encoder_when_model_is_none(self):
+        results = [
+            _make_result(id="1", score=0.5),
+            _make_result(id="2", score=0.9),
+        ]
+        reranker = Reranker(min_score=0.0, deduplicate=False, cross_encoder_model=None)
+        filtered = reranker.rerank("질의", results)
+
+        assert [r.score for r in filtered] == [0.9, 0.5]
+
+    @patch("rag.reranker.Reranker._load_cross_encoder")
+    def test_cross_encoder_in_rerank_grouped(self, mock_load):
+        mock_ce = MagicMock()
+        mock_ce.predict.side_effect = [
+            np.array([2.0, 0.5]),
+            np.array([-1.0, 1.0]),
+        ]
+        mock_load.return_value = mock_ce
+
+        grouped = {
+            "_common": {
+                "판세": [
+                    _make_result(id="1", score=0.8, text="공통A"),
+                    _make_result(id="2", score=0.7, text="공통B"),
+                ],
+            },
+            "김용남": {
+                "지지율": [
+                    _make_result(id="3", score=0.9, text="김용남A"),
+                    _make_result(id="4", score=0.6, text="김용남B"),
+                ],
+            },
+        }
+        reranker = Reranker(
+            min_score=0.0, deduplicate=False,
+            cross_encoder_model="mock-model",
+        )
+        result = reranker.rerank_grouped(grouped, district_name="평택을")
+
+        assert [r.id for r in result["_common"]["판세"]] == ["1", "2"]
+        assert [r.id for r in result["김용남"]["지지율"]] == ["4", "3"]
+
+        calls = mock_ce.predict.call_args_list
+        assert calls[0][0][0][0] == ("평택을 판세", "공통A")
+        assert calls[1][0][0][0] == ("김용남 지지율", "김용남A")
