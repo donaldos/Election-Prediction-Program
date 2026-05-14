@@ -21,7 +21,7 @@ districts:
         keywords: ["김용남", "평택을", "평택 재보궐"]
       - name: 조국
         party: 조국혁신당
-        keywords: ["조국", "평택을", "평택 재보궐"]
+        keywords: ["조국", "조국 후보", "조국 대표", "조국혁신당", "평택을", "평택 재보궐"]
       - name: 유의동
         party: 국민의힘
         keywords: ["유의동", "평택을", "평택 재보궐"]
@@ -37,7 +37,7 @@ districts:
     candidates:
       - name: 하정우
         party: 더불어민주당
-        keywords: ["하정우", "부산북구갑", "부산 북구 재보궐"]
+        keywords: ["하정우", "하정우 후보", "부산북구갑", "부산 북구 재보궐"]
       - name: 한동훈
         party: 무소속
         keywords: ["한동훈", "부산북구갑", "부산 북구 재보궐"]
@@ -80,7 +80,7 @@ scrapers:
 # 청킹 설정
 # ------------------------------------------------------------
 chunker:
-  type: korean_paragraph              # korean_paragraph | sentence | token | semantic | recursive
+  type: article_aware                  # korean_paragraph | sentence | token | semantic | recursive | article_aware
   params:
     chunk_size: 400
     overlap: 50

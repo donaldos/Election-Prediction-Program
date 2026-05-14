@@ -133,7 +133,7 @@ def _build_qa_prompt(query: str, chunks) -> str:
     return "\n".join(lines)
 
 
-def _print_qa_answer(query: str, answer: str, chunk_count: int) -> None:
+def _print_qa_answer(query: str, answer: str, chunks) -> None:
     print()
     print("=" * 60)
     print(f"❓ 질문: {query}")
@@ -141,7 +141,19 @@ def _print_qa_answer(query: str, answer: str, chunk_count: int) -> None:
     print()
     print(answer)
     print()
-    print(f"  📰 참고 청크: {chunk_count}건")
+    print(f"  📰 참고 청크: {len(chunks)}건")
+    print("-" * 60)
+    for i, c in enumerate(chunks, 1):
+        date_str = c.published_at.strftime("%Y-%m-%d") if c.published_at else ""
+        print(f"  [{i}] {c.title}")
+        print(f"      출처: {c.source} | {date_str} | score: {c.score:.4f}")
+        if c.article_url:
+            print(f"      링크: {c.article_url}")
+        text_preview = c.text[:150].replace("\n", " ")
+        if len(c.text) > 150:
+            text_preview += "…"
+        print(f"      내용: {text_preview}")
+        print()
     print("=" * 60)
     print()
 
@@ -268,7 +280,7 @@ def _run_query_mode(args, config: dict) -> None:
     elapsed = time.monotonic() - t0
     logger.info("LLM 응답 수신 — %.1f초", elapsed)
 
-    _print_qa_answer(query, answer, len(results))
+    _print_qa_answer(query, answer, results)
 
 
 def _run_verdict_mode(args, config: dict) -> None:

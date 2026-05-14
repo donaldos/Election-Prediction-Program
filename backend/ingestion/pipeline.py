@@ -69,6 +69,7 @@ class IngestionPipeline:
             return
 
         chunks = self._chunk(articles)
+        chunks = self._filter_chunks(chunks)
         if not chunks:
             logger.info("생성된 청크가 없습니다. 파이프라인 종료.")
             return
@@ -228,6 +229,26 @@ class IngestionPipeline:
 
         logger.info("청킹 완료 — 기사 %d건 → 청크 %d개", len(articles), len(all_chunks))
         return all_chunks
+
+    # ── filter ───────────────────────────────────────────
+
+    _MIN_CHUNK_CHARS = 50
+
+    def _filter_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
+        before = len(chunks)
+        filtered = [
+            c for c in chunks
+            if c.char_count >= self._MIN_CHUNK_CHARS and c.district_id
+        ]
+        short = sum(1 for c in chunks if c.char_count < self._MIN_CHUNK_CHARS)
+        untagged = sum(1 for c in chunks if not c.district_id)
+        removed = before - len(filtered)
+        if removed:
+            logger.info(
+                "청크 필터링 — %d건 제거 (50자 미만 %d건, 미태깅 %d건), %d건 유지",
+                removed, short, untagged, len(filtered),
+            )
+        return filtered
 
     # ── embed ────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ingestion.base_registry import ComponentRegistry
-from ingestion.scraper.base import AbstractScraper, ScraperRegistry
+from ingestion.scraper.base import AbstractScraper, ScraperRegistry, fetch_article_body
 from ingestion.scraper.naver import NaverNewsScraper
 from ingestion.scraper.political import PoliticalNewsScraper
 from ingestion.scraper.url_store import ScrapedUrlStore
@@ -552,3 +552,71 @@ class TestRawArticle:
         assert article.candidate == "홍길동"
         assert article.district_id == "pyeongtaek_b"
         assert len(article.matched_keywords) == 2
+
+
+# ============================================================
+# fetch_article_body 테스트
+# ============================================================
+
+
+class TestFetchArticleBody:
+
+    def test_extracts_body_from_dic_area(self):
+        html = '<html><body><div id="dic_area">기사 본문 내용입니다. ' + '추가 내용. ' * 10 + '</div></body></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = html
+        with patch("httpx.get", return_value=mock_resp):
+            body = fetch_article_body("https://example.com/article/1")
+        assert "기사 본문 내용입니다" in body
+
+    def test_extracts_body_from_article_tag(self):
+        html = '<html><body><article>기사 본문이 여기에 있습니다. ' + '내용 추가. ' * 10 + '</article></body></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = html
+        with patch("httpx.get", return_value=mock_resp):
+            body = fetch_article_body("https://example.com/article/2")
+        assert "기사 본문이 여기에 있습니다" in body
+
+    def test_falls_back_to_og_description(self):
+        og_text = "메타 설명으로 대체된 기사 내용입니다. " * 5
+        html = f'<html><head><meta property="og:description" content="{og_text}"></head><body></body></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = html
+        with patch("httpx.get", return_value=mock_resp):
+            body = fetch_article_body("https://example.com/article/3")
+        assert "메타 설명으로 대체된" in body
+
+    def test_returns_empty_on_http_error(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        with patch("httpx.get", return_value=mock_resp):
+            body = fetch_article_body("https://example.com/404")
+        assert body == ""
+
+    def test_returns_empty_on_network_error(self):
+        with patch("httpx.get", side_effect=Exception("timeout")):
+            body = fetch_article_body("https://example.com/timeout")
+        assert body == ""
+
+    def test_removes_script_and_style(self):
+        body_text = "본문 텍스트입니다. " * 20
+        html = f'<html><body><div id="dic_area">{body_text}<script>alert("x")</script><style>.x{{}}</style></div></body></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = html
+        with patch("httpx.get", return_value=mock_resp):
+            body = fetch_article_body("https://example.com/article/4")
+        assert "alert" not in body
+        assert "본문 텍스트입니다" in body
+
+    def test_skips_short_body(self):
+        html = '<html><body><div id="dic_area">짧음</div><meta property="og:description" content="og도 짧음"></head></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = html
+        with patch("httpx.get", return_value=mock_resp):
+            body = fetch_article_body("https://example.com/article/5")
+        assert body == ""

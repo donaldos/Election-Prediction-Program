@@ -6,7 +6,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from ingestion.scraper.base import AbstractScraper, ScraperRegistry
+from ingestion.scraper.base import AbstractScraper, ScraperRegistry, fetch_article_body
 from ingestion.scraper.url_store import ScrapedUrlStore
 from models.article import RawArticle
 
@@ -106,6 +106,7 @@ class NaverNewsScraper(AbstractScraper):
             logger.warning("[%s] 수집 중 오류 발생: %s", self.source_name, e)
 
         result = articles[:limit]
+        self._enrich_bodies(result)
 
         saved = self._url_store.add_batch([
             {"url": a.url, "source": a.source, "title": a.title} for a in result
@@ -116,6 +117,19 @@ class NaverNewsScraper(AbstractScraper):
             self.source_name, len(result), saved, skipped_existing,
         )
         return result
+
+    def _enrich_bodies(self, articles: list[RawArticle]) -> None:
+        enriched = 0
+        for article in articles:
+            body = fetch_article_body(article.url, headers=HEADERS, timeout=10)
+            if body and len(body) > len(article.body):
+                article.body = body
+                enriched += 1
+            time.sleep(self._delay)
+        logger.info(
+            "[%s] 기사 전문 수집 — %d/%d건 본문 확보",
+            self.source_name, enriched, len(articles),
+        )
 
     def _search_keyword(
         self,

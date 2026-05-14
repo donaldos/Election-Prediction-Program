@@ -4,7 +4,10 @@ from datetime import datetime
 
 import pytest
 
-from ingestion.tagger import tag_articles, _count_keyword_hits, _match_article, _build_candidate_map
+from ingestion.tagger import (
+    tag_articles, _count_keyword_hits, _match_article,
+    _build_candidate_map, _has_election_context,
+)
 from models.article import RawArticle
 
 
@@ -41,6 +44,29 @@ def _make_article(title: str, body: str, **kwargs) -> RawArticle:
     return RawArticle(title=title, body=body, **defaults)
 
 
+# ── _has_election_context ──────────────────────────
+
+class TestHasElectionContext:
+
+    def test_election_word_nearby(self):
+        text = "조국 후보가 출마를 선언했다"
+        assert _has_election_context(text, 0, 2) is True
+
+    def test_no_election_word(self):
+        text = "가슴속에 늘 조국을 품고 살아온 핏줄이다"
+        idx = text.index("조국")
+        assert _has_election_context(text, idx, idx + 2) is False
+
+    def test_party_name_as_context(self):
+        text = "조국혁신당에서 활동하는 조국 대표"
+        assert _has_election_context(text, 0, 2) is True
+
+    def test_context_window_boundary(self):
+        text = ("가" * 60) + "조국" + ("나" * 60) + "후보"
+        idx = text.index("조국")
+        assert _has_election_context(text, idx, idx + 2) is False
+
+
 # ── _count_keyword_hits ─────────────────────────────
 
 class TestCountKeywordHits:
@@ -60,6 +86,22 @@ class TestCountKeywordHits:
     def test_multiple_keywords(self):
         hits = _count_keyword_hits("평택을 김용남 후보 평택을", ["김용남", "평택을"])
         assert hits == {"김용남": 1, "평택을": 2}
+
+    def test_require_context_filters_non_election(self):
+        text = "가슴속에 늘 조국을 품고 살아온 핏줄"
+        hits = _count_keyword_hits(text, ["조국"], require_context=True)
+        assert hits == {}
+
+    def test_require_context_keeps_election(self):
+        text = "조국 후보가 평택을 재보궐 선거에 출마했다"
+        hits = _count_keyword_hits(text, ["조국"], require_context=True)
+        assert hits == {"조국": 1}
+
+    def test_require_context_partial_match(self):
+        padding = "이것은 관련 없는 내용입니다. " * 5
+        text = f"조국을 사랑합니다. {padding}조국 후보가 출마했습니다."
+        hits = _count_keyword_hits(text, ["조국"], require_context=True)
+        assert hits == {"조국": 1}
 
 
 # ── _build_candidate_map ────────────────────────────
@@ -92,7 +134,7 @@ class TestMatchArticle:
         assert "한동훈" in keywords
 
     def test_multiple_candidates_same_district(self):
-        text = "김용남과 조국이 평택을에서 치열한 접전을 벌이고 있다."
+        text = "김용남 후보와 조국 후보가 평택을에서 치열한 접전을 벌이고 있다."
         district_id, candidate, keywords = _match_article(text, self.cmap)
         assert district_id == "pyeongtaek_b"
         assert candidate == ""
@@ -107,7 +149,7 @@ class TestMatchArticle:
         assert keywords == []
 
     def test_cross_district_picks_stronger(self):
-        text = "한동훈 한동훈 한동훈 부산북구갑 부산북구갑. 김용남."
+        text = "한동훈 후보 한동훈 후보 한동훈 후보 부산북구갑 선거. 김용남 후보."
         district_id, candidate, keywords = _match_article(text, self.cmap)
         assert district_id == "busan_bukgu_gap"
 
@@ -116,6 +158,18 @@ class TestMatchArticle:
         district_id, candidate, keywords = _match_article(text, self.cmap)
         assert district_id == "pyeongtaek_b"
         assert candidate == ""
+
+    def test_no_match_without_election_context(self):
+        text = "고려인은 가슴속에 늘 조국을 품고 살아온 우리의 소중한 핏줄이다."
+        district_id, candidate, keywords = _match_article(text, self.cmap)
+        assert district_id == ""
+        assert candidate == ""
+
+    def test_match_with_election_context(self):
+        text = "조국 대표가 평택을 재보궐 선거에 출마를 선언했다."
+        district_id, candidate, keywords = _match_article(text, self.cmap)
+        assert district_id == "pyeongtaek_b"
+        assert candidate == "조국"
 
 
 # ── tag_articles ────────────────────────────────────
@@ -131,7 +185,7 @@ class TestTagArticles:
 
     def test_tags_comparison_article(self):
         articles = [_make_article(
-            "평택을 김용남 vs 조국",
+            "평택을 김용남 vs 조국 선거",
             "김용남 후보와 조국 후보가 치열한 접전을 벌이고 있다.",
         )]
         result = tag_articles(articles, DISTRICTS)
@@ -157,9 +211,9 @@ class TestTagArticles:
 
     def test_multiple_articles_mixed(self):
         articles = [
-            _make_article("한동훈 출마", "한동훈 부산북구갑 선거"),
+            _make_article("한동훈 출마 선언", "한동훈 후보가 부산북구갑 선거에 출마"),
             _make_article("날씨 기사", "오늘 서울 맑음"),
-            _make_article("평택을 판세", "김용남과 유의동 접전 평택을"),
+            _make_article("평택을 판세", "김용남 후보와 유의동 후보 접전 평택을 재보궐"),
         ]
         result = tag_articles(articles, DISTRICTS)
         assert result[0].district_id == "busan_bukgu_gap"

@@ -41,11 +41,13 @@ SAMPLE_ARTICLES = [
     ),
 ]
 
+_SAMPLE_TEXT = "평택을 선거구의 여론조사 결과가 발표되었다. 후보A가 30%로 선두를 달리고 있으며 접전이 예상된다."
+
 SAMPLE_CHUNKS = [
     Chunk(
-        text="평택을 선거구의 여론조사 결과가 발표되었다.",
+        text=_SAMPLE_TEXT,
         chunk_index=0,
-        char_count=22,
+        char_count=len(_SAMPLE_TEXT),
         article_url="https://example.com/1",
         source="naver_news",
         title="평택을 판세 분석",
@@ -58,9 +60,9 @@ SAMPLE_CHUNKS = [
 
 SAMPLE_EMBEDDED = [
     ChunkWithEmbedding(
-        text="평택을 선거구의 여론조사 결과가 발표되었다.",
+        text=_SAMPLE_TEXT,
         chunk_index=0,
-        char_count=22,
+        char_count=len(_SAMPLE_TEXT),
         article_url="https://example.com/1",
         source="naver_news",
         title="평택을 판세 분석",
@@ -300,3 +302,69 @@ class TestIngestionPipeline:
             pipeline.run()
 
         mock_store.assert_called_once_with(SAMPLE_EMBEDDED)
+
+
+class TestFilterChunks:
+
+    def _make_chunk(self, text: str = "충분히 긴 텍스트입니다. " * 5, district_id: str = "pyeongtaek_b", **kwargs):
+        defaults = {
+            "chunk_index": 0,
+            "char_count": len(text),
+            "article_url": "https://example.com/1",
+            "source": "naver_news",
+            "title": "테스트",
+            "published_at": datetime(2026, 5, 1),
+            "candidate": "",
+            "chunker_type": "korean_paragraph",
+        }
+        defaults.update(kwargs)
+        return Chunk(text=text, district_id=district_id, **defaults)
+
+    def test_keeps_valid_chunks(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        chunks = [self._make_chunk()]
+        result = pipeline._filter_chunks(chunks)
+        assert len(result) == 1
+
+    def test_removes_short_chunks(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        short_text = "짧은 텍스트"
+        chunks = [self._make_chunk(text=short_text)]
+        result = pipeline._filter_chunks(chunks)
+        assert len(result) == 0
+
+    def test_removes_untagged_chunks(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        chunks = [self._make_chunk(district_id="")]
+        result = pipeline._filter_chunks(chunks)
+        assert len(result) == 0
+
+    def test_mixed_filtering(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        chunks = [
+            self._make_chunk(),
+            self._make_chunk(text="짧음"),
+            self._make_chunk(district_id=""),
+            self._make_chunk(text="짧음", district_id=""),
+            self._make_chunk(district_id="busan_bukgu_gap"),
+        ]
+        result = pipeline._filter_chunks(chunks)
+        assert len(result) == 2
+
+    def test_empty_input(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        assert pipeline._filter_chunks([]) == []
+
+    def test_boundary_exactly_50_chars(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        text_50 = "가" * 50
+        chunks = [self._make_chunk(text=text_50)]
+        result = pipeline._filter_chunks(chunks)
+        assert len(result) == 1
+
+    def test_boundary_49_chars_removed(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        text_49 = "가" * 49
+        chunks = [self._make_chunk(text=text_49)]
+        result = pipeline._filter_chunks(chunks)
+        assert len(result) == 0

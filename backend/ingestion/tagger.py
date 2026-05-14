@@ -2,6 +2,9 @@
 
 수집된 기사의 제목+본문에서 config.yaml의 후보 키워드를 매칭하여
 candidate, district_id, matched_keywords 필드를 채운다.
+
+문맥 검증: 키워드 매칭 시 주변 ±50자에 선거 관련 단어가 있어야 유효한 매칭으로 인정.
+"조국"(인물) vs "조국"(일반 명사) 같은 동음이의어 오태깅을 방지한다.
 """
 from __future__ import annotations
 
@@ -12,11 +15,48 @@ from models.article import RawArticle
 
 logger = logging.getLogger(__name__)
 
+_ELECTION_CONTEXT_WORDS = [
+    "후보", "대표", "의원", "출마", "선거", "재보궐", "보궐",
+    "지지율", "공약", "판세", "당선", "득표", "투표", "유권자",
+    "캠프", "선거구", "여론조사", "지지", "경선", "공천",
+    "접전", "경합", "대결", "맞대결",
+    "국민의힘", "더불어민주당", "조국혁신당", "진보당", "자유와혁신", "무소속",
+    "국회", "정치", "보수", "진보", "야당", "여당",
+    "지역구", "표심", "민심",
+]
 
-def _count_keyword_hits(text: str, keywords: list[str]) -> dict[str, int]:
+_CONTEXT_WINDOW = 50
+
+
+def _has_election_context(text: str, start: int, end: int) -> bool:
+    w_start = max(0, start - _CONTEXT_WINDOW)
+    w_end = min(len(text), end + _CONTEXT_WINDOW)
+    window = text[w_start:w_end]
+    return any(cw in window for cw in _ELECTION_CONTEXT_WORDS)
+
+
+def _count_keyword_hits(
+    text: str,
+    keywords: list[str],
+    require_context: bool = False,
+) -> dict[str, int]:
     hits: dict[str, int] = {}
     for kw in keywords:
-        count = text.count(kw)
+        if not require_context:
+            count = text.count(kw)
+            if count > 0:
+                hits[kw] = count
+            continue
+
+        count = 0
+        start = 0
+        while True:
+            idx = text.find(kw, start)
+            if idx == -1:
+                break
+            if _has_election_context(text, idx, idx + len(kw)):
+                count += 1
+            start = idx + len(kw)
         if count > 0:
             hits[kw] = count
     return hits
@@ -85,7 +125,7 @@ def _match_article(
         matched_candidates: list[dict] = []
 
         for cand in candidates:
-            hits = _count_keyword_hits(text, cand["keywords"])
+            hits = _count_keyword_hits(text, cand["keywords"], require_context=True)
             if hits:
                 matched_candidates.append({
                     "name": cand["name"],
