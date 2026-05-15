@@ -65,12 +65,12 @@ election_expectation/
 │   │
 │   ├── ingestion/                   # 수집 파이프라인 (scrape→tag→chunk→embed→store)
 │   │   ├── pipeline.py
-│   │   ├── tagger.py                # 기사 → 후보/선거구 자동 태깅
+│   │   ├── tagger.py                # 기사 → 후보/선거구 자동 태깅 (문맥 검증 포함)
 │   │   ├── base_registry.py
 │   │   ├── scraper/
 │   │   │   ├── base.py, naver.py, naver_election.py, political.py, url_store.py, run.py
 │   │   ├── chunker/
-│   │   │   ├── base.py, korean_paragraph.py, sentence.py, token.py, semantic.py, recursive.py
+│   │   │   ├── base.py, korean_paragraph.py, sentence.py, token.py, semantic.py, recursive.py, article_aware.py
 │   │   └── embedder/
 │   │       ├── base.py, openai_embedder.py, bge.py, ko_simcse.py
 │   │
@@ -90,7 +90,7 @@ election_expectation/
 │   │
 │   └── tests/
 │       ├── app/                     # 31개 (admin 20 + scores 6 + scheduler 5)
-│       ├── ingestion/               # 108개 (scraper 33 + tagger 19 + chunker 27 + embedder 16 + pipeline 13)
+│       ├── ingestion/               # 127개 (scraper 33 + tagger 28 + chunker 37 + embedder 16 + pipeline 13)
 │       ├── rag/                     # 57개 (retriever 15 + reranker 14 + scorer 17 + verdict_store 11)
 │       └── vectordb/               # 48개 (43 passed, 5 skipped)
 │
@@ -173,6 +173,47 @@ PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --purge-days 30
        ├── 검색 시: lookback_days로 최근 기사만 사용
        └── 정리 시: purge_days 이전 벡터 자동 삭제
 ```
+
+---
+
+## 데이터 품질 최적화
+
+### 기사 구조 인식 청킹 (ArticleAwareChunker)
+
+일반 청커는 기사 구조를 무시하고 텍스트를 고정 크기로 분할하므로, 중간 청크에서 "이 기사가 어떤 후보/선거구에 관한 것인지" 문맥이 유실됩니다. `ArticleAwareChunker`는 기사의 **제목·리드·본문** 구조를 인식하여 청킹합니다.
+
+**동작 방식**:
+1. 첫 번째 청크: `[제목] {title}\n[리드] {lead 문단}` — 기사의 핵심 정보를 압축
+2. 이후 청크: `[제목] {title}\n{본문 세그먼트}` — 모든 청크에 제목을 prefix로 붙여 문맥 유지
+3. 본문은 문단(`\n\n`) 또는 줄바꿈(`\n`) 경계에서 분할하여 의미 단위를 보존
+
+```yaml
+chunker:
+  type: article_aware          # 기사 구조 인식 청킹 사용
+  params:
+    chunk_size: 400
+    overlap: 50
+```
+
+**효과**: VectorDB 검색 시 모든 청크에 제목이 포함되어 있어 "김용남 후보의 공약" 같은 쿼리에 대해 본문 중간 청크도 높은 유사도를 반환합니다.
+
+### 태거 문맥 검증 (동음이의어 오태깅 방지)
+
+"조국"이라는 키워드는 정치인 이름이자 "motherland"를 뜻하는 일반 명사이기도 합니다. 키워드 매칭만으로는 "가슴속에 늘 조국을 품고 살아온 핏줄"같은 기사가 조국 후보 관련으로 오태깅될 수 있습니다.
+
+**해결 방법**: 키워드 매칭 시 주변 ±50자 윈도우 내에 **선거 맥락 단어**가 존재하는지 검증합니다.
+
+```
+선거 맥락 단어: 후보, 대표, 의원, 출마, 선거, 재보궐, 지지율, 공약, 판세, ...
+               국민의힘, 더불어민주당, 조국혁신당, 진보당, 무소속, ...
+               국회, 정치, 보수, 진보, 야당, 여당, 표심, 민심
+```
+
+| 텍스트 | 매칭 결과 |
+|--------|----------|
+| "조국 **후보**가 출마를 선언했다" | 태깅 (±50자 내 "후보" 존재) |
+| "가슴속에 늘 조국을 품고 살아온 핏줄" | **미태깅** (±50자 내 선거 맥락 단어 없음) |
+| "**조국혁신당**에서 활동하는 조국 대표" | 태깅 (±50자 내 "조국혁신당" 존재) |
 
 ---
 
@@ -326,7 +367,7 @@ npm run dev
 #### 7. 테스트 실행
 
 ```bash
-# 백엔드 전체 테스트 (215개 passed, 14개 skipped)
+# 백엔드 전체 테스트 (262개 passed, 15개 skipped)
 cd backend
 PYTHONPATH=. pytest tests/ -v
 
@@ -394,6 +435,7 @@ PYTHONPATH=. pytest tests/rag/ -v
 | TokenChunker | `token` | `tiktoken` | LLM 토큰 제한 정밀 제어 |
 | SemanticChunker | `semantic` | `sentence-transformers` | 긴 기사, 주제 전환 감지 |
 | RecursiveChunker | `recursive` | 없음 | 구분자 커스터마이징 |
+| ArticleAwareChunker | `article_aware` | 없음 | 기사 구조 인식 (제목 prefix + 리드 분리) |
 
 ---
 
@@ -781,9 +823,9 @@ curl http://localhost:8000/api/v1/admin/polls?district_id=busan_bukgu_gap
 
 - [x] 프로젝트 구조 설계, Strategy + Registry 패턴
 - [x] Scraper 구현 완료 (NaverNewsScraper, NaverElectionScraper, PoliticalNewsScraper, URL 영속 저장소)
-- [x] Chunker 구현 완료 (5종: korean_paragraph, sentence, token, semantic, recursive)
+- [x] Chunker 구현 완료 (6종: korean_paragraph, sentence, token, semantic, recursive, article_aware)
 - [x] Embedder 구현 완료 (3종: openai, bge_m3, ko_simcse)
-- [x] 기사 → 후보/선거구 자동 태깅 (키워드 매칭 기반)
+- [x] 기사 → 후보/선거구 자동 태깅 (키워드 매칭 + 문맥 검증)
 - [x] IngestionPipeline 연결 (scrape→tag→chunk→embed→store)
 - [x] VectorDB Repository 구현 완료 (7종: qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector, pinecone)
 - [x] VectorDB 안전장치 (결정적 ID, 시간 필터, 만료 정리)
@@ -799,7 +841,7 @@ curl http://localhost:8000/api/v1/admin/polls?district_id=busan_bukgu_gap
 - [x] RAG 트리 구조 프롬프트 (후보별 × 분석 항목별 그룹핑된 근거 기사 전달)
 - [x] Cross-encoder 재정렬 (bi-encoder 필터 후 BAAI/bge-reranker-v2-m3로 정밀 재평가, config.yaml에서 on/off)
 - [x] NaverElectionScraper (네이버 선거 전용 페이지 크롤링)
-- [x] 테스트 230개 passed, 15개 skipped
+- [x] 테스트 262개 passed, 15개 skipped
 - [x] TypeScript 대시보드 (Next.js 16 + Recharts)
 - [x] CORS 미들웨어 (프론트엔드 → 백엔드 API 연동, `CORS_ORIGINS` 환경변수 지원)
 - [x] Docker 배포 (백엔드 Dockerfile + 프론트엔드 멀티스테이지 Dockerfile + docker-compose.yml)

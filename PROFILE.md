@@ -10,7 +10,7 @@
 |------|------|
 | 기간 | 2026.04 ~ |
 | 역할 | 기획·설계·개발·배포 전 과정 (1인 개발) |
-| 규모 | 백엔드 Python 78파일 / 5,800+ LoC, 프론트엔드 TypeScript 1,200 LoC, 테스트 244개 |
+| 규모 | 백엔드 Python 78파일 / 5,800+ LoC, 프론트엔드 TypeScript 1,200 LoC, 테스트 262개 |
 
 ---
 
@@ -46,7 +46,7 @@
 
 ### 2. Strategy + Registry 패턴으로 교체 가능한 아키텍처
 
-모든 핵심 컴포넌트(Scraper 3종, Chunker 5종, Embedder 3종, VectorDB 7종, Scorer 2종)를 **설정 파일(config.yaml) 변경만으로 전환** 가능하도록 설계.
+모든 핵심 컴포넌트(Scraper 3종, Chunker 6종, Embedder 3종, VectorDB 7종, Scorer 2종)를 **설정 파일(config.yaml) 변경만으로 전환** 가능하도록 설계.
 
 ```yaml
 # 예: VectorDB를 ChromaDB에서 Qdrant로 전환 — 코드 수정 불필요
@@ -88,12 +88,14 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 | 시간 필터 | `lookback_days` — 검색 시 최근 N일 기사만 사용 |
 | 만료 정리 | `purge_days` — 오래된 벡터 주기적 물리 삭제 |
 
-### 6. 다채널 뉴스 크롤링 + 자동 태깅
+### 6. 다채널 뉴스 크롤링 + 기사 전문 수집 + 자동 태깅
 
 - NaverNewsScraper: SDS 디자인 시스템 기반 동적 셀렉터로 네이버 뉴스 파싱
 - NaverElectionScraper: 네이버 선거 전용 페이지 크롤링
 - PoliticalNewsScraper: 오마이뉴스·프레시안·미디어오늘 RSS 파싱
-- 자동 태깅: 기사 제목+본문에서 config.yaml 후보 키워드 매칭 → `candidate`, `district_id` 자동 부여
+- **기사 전문 수집**: 검색 결과 snippet 대신 상세 페이지에서 본문 전문을 추출 (11개 CSS 셀렉터 + og:description fallback). 기사당 평균 157자 → 1,200자 이상으로 정보량 대폭 증가
+- **품질 필터**: 50자 미만 극소 청크 및 선거구 미태깅 청크를 VectorDB 저장 전 제거
+- 자동 태깅 + 문맥 검증: 기사 제목+본문에서 키워드 매칭 시 **주변 ±50자 윈도우에 선거 맥락 단어 존재 여부를 검증**하여 동음이의어 오태깅 방지 (예: "조국"(정치인) vs "조국"(motherland))
 - URL 영속 저장소(`scraped_urls.jsonl`)로 중복 수집 방지
 
 ### 7. 대시보드 + 관리자 페이지 (Full-stack)
@@ -114,15 +116,15 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 
 ## 테스트
 
-총 **244개** 테스트 (230 passed, 14 skipped)
+총 **277개** 테스트 (262 passed, 15 skipped)
 
 | 모듈 | 테스트 수 | 내용 |
 |------|----------|------|
-| Scraper | 33 | 네이버·정치 매체 크롤링, URL 영속 저장소 |
-| Tagger | 19 | 키워드 매칭 자동 태깅 |
-| Chunker | 27 | 5종 청커 (한국어 문단, 문장, 토큰, 의미, 재귀) |
+| Scraper | 40 | 네이버·정치 매체 크롤링, 기사 전문 수집, URL 영속 저장소 |
+| Tagger | 28 | 키워드 매칭 + 문맥 검증 자동 태깅 |
+| Chunker | 37 | 6종 청커 (한국어 문단, 문장, 토큰, 의미, 재귀, 기사 구조 인식) |
 | Embedder | 16 | 3종 임베더 (OpenAI, BGE-M3, KoSimCSE) |
-| Pipeline | 13 | 수집 파이프라인 E2E |
+| Pipeline | 20 | 수집 파이프라인 E2E + 품질 필터 |
 | VectorDB | 48 | 7종 VectorDB 구현체 (CRUD, 필터, 만료 정리) |
 | RAG | 57 | Retriever 15 + Reranker 14 + Scorer 17 + VerdictStore 11 |
 | API | 31 | Admin 20 + Scores 6 + Scheduler 5 |
@@ -145,6 +147,24 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 
 **해결**: Cross-encoder(bge-reranker-v2-m3) 2단계 재정렬 도입. 질의+청크를 결합 입력으로 관련성 직접 평가하여 오분류 보정.
 
+### 동음이의어 오태깅 ("조국" 문제)
+
+**문제**: "카자흐스탄 고려인은 가슴속에 늘 조국을 품고 살아온 핏줄이다" 같은 기사가 정치인 "조국" 후보 관련 기사로 오태깅됨. 한국어에서 인명과 일반 명사가 동일한 표기를 갖는 동음이의어 문제.
+
+**해결**: 키워드 매칭 시 **문맥 검증(Context Validation)** 도입. 매칭된 키워드 주변 ±50자 윈도우 내에 선거 관련 단어(후보, 출마, 선거, 재보궐, 지지율, 정당명 등 38개)가 존재해야 유효한 매칭으로 인정. 추가로 config.yaml에 구체적 키워드("조국 후보", "조국 대표", "조국혁신당")를 확장하여 정밀도 향상.
+
+### 기사 본문 정보량 부족 (snippet 수집 한계)
+
+**문제**: 네이버 뉴스 검색 결과에서 snippet(요약문, 평균 157자)만 수집하여, 청킹 후 VectorDB에 저장되는 정보량이 절대적으로 부족. 기사당 1~2개 청크만 생성되어 RAG 검색 시 핵심 내용 누락.
+
+**해결**: `fetch_article_body()` 함수를 구현하여 기사 상세 페이지에서 전문 추출. 11개 CSS 셀렉터 순차 시도 + og:description fallback + 불필요 요소(script, style, 저작권 영역) 자동 제거. 기사당 평균 1,200자 이상 확보, 청크 수 6배 이상 증가(54건 → 346건).
+
+### VectorDB 노이즈 유입 (극소 청크 + 미태깅)
+
+**문제**: VectorDB 저장 데이터의 24%가 50자 미만 극소 청크(제목만 남은 잔여물), 24%가 선거구 미태깅 청크(무관한 뉴스). 검색 결과에 불필요한 노이즈 유발.
+
+**해결**: `_filter_chunks()` 품질 필터 도입. 50자 미만 청크 및 district_id 미태깅 청크를 VectorDB 저장 전 제거. 필터 적용 후 VectorDB 전체 재구축하여 노이즈 0% 달성.
+
 ### VectorDB 데이터 무결성
 
 **문제**: 반복 수집 시 동일 기사 중복 벡터 축적 → 검색 결과 노이즈 증가
@@ -156,8 +176,9 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 ## 기술적 성과 요약
 
 - **End-to-End RAG 시스템**: 데이터 수집부터 LLM 판정, 대시보드 시각화까지 전 과정을 1인 설계·구현
-- **교체 가능한 컴포넌트 아키텍처**: 20종의 구현체(Scraper 3 + Chunker 5 + Embedder 3 + VectorDB 7 + Scorer 2)를 설정 파일만으로 전환
+- **교체 가능한 컴포넌트 아키텍처**: 21종의 구현체(Scraper 3 + Chunker 6 + Embedder 3 + VectorDB 7 + Scorer 2)를 설정 파일만으로 전환
 - **2단계 Reranking**: bi-encoder + Cross-encoder 파이프라인으로 검색 정확도 향상
 - **프롬프트 엔지니어링**: 트리 구조 + 토큰 예산 관리 + 오차범위 기반 통계적 판정 설계
 - **Full-stack 개발**: Python(FastAPI) 백엔드 + TypeScript(Next.js) 프론트엔드 + Docker 배포
-- **품질 관리**: 244개 테스트, Pydantic v2 도메인 모델, 3단계 로깅 정책
+- **데이터 품질 파이프라인**: 기사 전문 수집(11개 셀렉터) + 기사 구조 인식 청킹(제목 prefix + 리드 분리) + 문맥 검증 태깅(±50자 윈도우) + 품질 필터(50자 미만·미태깅 제거)
+- **품질 관리**: 262개 테스트, Pydantic v2 도메인 모델, 3단계 로깅 정책

@@ -75,7 +75,7 @@ election-radar/
 │   │
 │   ├── ingestion/                   ← 수집 파이프라인 (scrape→tag→chunk→embed→store)
 │   │   ├── pipeline.py              ← Orchestrator CLI
-│   │   ├── tagger.py                ← 기사 → 후보/선거구 자동 태깅 (키워드 매칭)
+│   │   ├── tagger.py                ← 기사 → 후보/선거구 자동 태깅 (키워드 매칭 + 문맥 검증)
 │   │   ├── base_registry.py         ← 범용 ComponentRegistry[T]
 │   │   │
 │   │   ├── scraper/                 ← 뉴스 수집
@@ -91,7 +91,8 @@ election-radar/
 │   │   │   ├── sentence.py          ← SentenceChunker (kss 문장 분리)
 │   │   │   ├── token.py             ← TokenChunker (tiktoken 토큰 기준)
 │   │   │   ├── semantic.py          ← SemanticChunker (임베딩 유사도 경계 감지)
-│   │   │   └── recursive.py         ← RecursiveChunker (재귀적 구분자 분리)
+│   │   │   ├── recursive.py         ← RecursiveChunker (재귀적 구분자 분리)
+│   │   │   └── article_aware.py     ← ArticleAwareChunker (기사 구조 인식, 제목 prefix + 리드 분리)
 │   │   │
 │   │   └── embedder/                ← 벡터 임베딩
 │   │       ├── base.py              ← AbstractEmbedder (ABC) + EmbedderRegistry + embed_query()
@@ -125,10 +126,10 @@ election-radar/
 │   │
 │   └── tests/
 │       ├── ingestion/
-│       │   ├── test_scraper.py      ← 33개
-│       │   ├── test_chunker.py      ← 27개 (19 passed, 8 skipped)
+│       │   ├── test_scraper.py      ← 40개
+│       │   ├── test_chunker.py      ← 37개 (29 passed, 8 skipped)
 │       │   ├── test_embedder.py     ← 16개 (14 passed, 2 skipped)
-│       │   └── test_pipeline.py     ← 13개
+│       │   └── test_pipeline.py     ← 20개
 │       ├── rag/
 │       │   ├── test_retriever.py    ← 12개
 │       │   ├── test_reranker.py     ← 9개
@@ -381,7 +382,7 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
 
 ## 알려진 제한 사항
 
-- **기사 메타데이터 태깅**: `ingestion/tagger.py`로 키워드 기반 자동 태깅 구현 완료. 다만 키워드 매칭 방식이므로, 키워드에 없는 별명/약칭 사용 시 미태깅될 수 있음. config.yaml의 `keywords` 목록을 확장하여 대응.
+- **기사 메타데이터 태깅**: `ingestion/tagger.py`로 키워드 매칭 + 문맥 검증 기반 자동 태깅 구현 완료. 키워드 주변 ±50자에 선거 관련 단어가 있어야 유효 매칭으로 인정하여 동음이의어 오태깅("조국" 등) 방지. 키워드에 없는 별명/약칭 사용 시 미태깅될 수 있으므로 config.yaml의 `keywords` 목록을 확장하여 대응.
 - **네이버 셀렉터 변동**: 네이버 SDS 클래스명이 주기적으로 변경됨. `data-heatmap-target`과 `sds-comps-profile-info-*` 시맨틱 클래스 기반으로 2026-04-30 수정 완료. 수집 결과가 0건이면 HTML 구조 변경 가능성 확인 필요.
 
 ---
@@ -394,24 +395,29 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
   - [x] `NaverNewsScraper` — data-heatmap-target 기반 동적 컨테이너 탐색
   - [x] `PoliticalNewsScraper` — 오마이뉴스·프레시안·미디어오늘 RSS 파싱
   - [x] `ScrapedUrlStore` — URL JSONL 영속 저장 (중복 수집 방지)
-  - [x] 테스트 33개 통과
+  - [x] `fetch_article_body()` — 기사 상세 페이지 전문 추출 (11개 CSS 셀렉터 + og:description fallback)
+  - [x] `_enrich_bodies()` — 수집 후 기사별 상세 페이지 방문하여 전문 교체
+  - [x] 테스트 40개 통과
 - [x] Chunker 구현 완료
-  - [x] 5종 구현 (korean_paragraph, sentence, token, semantic, recursive)
+  - [x] 6종 구현 (korean_paragraph, sentence, token, semantic, recursive, article_aware)
   - [x] Template Method 패턴 — `chunk()` 공통 로깅 + `_do_chunk()` 구현체 분리
-  - [x] 테스트 27개 (19 passed, 8 skipped)
+  - [x] ArticleAwareChunker — 기사 구조 인식 (제목 prefix + 리드 분리 + 문단 경계 분할)
+  - [x] 테스트 37개 (29 passed, 8 skipped)
 - [x] Embedder 구현 완료
   - [x] 3종 구현 (openai, bge_m3, ko_simcse)
   - [x] `embed_query()` 메서드 — 단일 텍스트 벡터 변환 (Retriever용)
   - [x] 테스트 16개 (14 passed, 2 skipped)
 - [x] 기사 → 후보/선거구 자동 태깅 구현 완료
-  - [x] `ingestion/tagger.py` — 키워드 매칭 기반 candidate/district_id 자동 태깅
+  - [x] `ingestion/tagger.py` — 키워드 매칭 + 문맥 검증 기반 candidate/district_id 자동 태깅
+  - [x] 문맥 검증: 키워드 주변 ±50자에 선거 관련 단어 존재 여부 확인 (동음이의어 오태깅 방지)
   - [x] 단일 후보 매칭 → candidate + district_id, 다수 후보 → district_id만, 비관련 → 미태깅
   - [x] 수집 파이프라인에 scrape → **tag** → chunk 단계로 통합
-  - [x] 테스트 19개 통과
+  - [x] 테스트 28개 통과
 - [x] IngestionPipeline 연결 (scrape→tag→chunk→embed→store)
   - [x] CLI: `--scraper`, `--days`, `--skip-chunk`, `--skip-embed`, `--skip-store`
   - [x] `load_dotenv()` 적용
-  - [x] 테스트 13개 통과
+  - [x] `_filter_chunks()` — 50자 미만 및 미태깅 청크 필터링
+  - [x] 테스트 20개 통과
 - [x] VectorRepository 구현 완료
   - [x] 7종 구현 (qdrant, chroma, milvus_lite, lancedb, weaviate, pgvector, pinecone)
   - [x] ChromaDB 다중 필터 `$and` 래퍼 + `published_at_ts` 숫자 필터
