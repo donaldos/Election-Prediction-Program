@@ -117,6 +117,7 @@ election-radar/
 │   │   ├── scorer.py                ← AbstractScorer (ABC) + ScorerRegistry + 프롬프트 구성
 │   │   ├── openai_scorer.py         ← OpenAIScorer (GPT-4o, 기본값)
 │   │   ├── anthropic_scorer.py      ← AnthropicScorer (Claude)
+│   │   ├── verdict_graph.py         ← LangGraph 판정 오케스트레이션 (검증·일관성·보정)
 │   │   └── verdict_store.py         ← VerdictStore (판정 결과 JSONL 영속 저장/조회)
 │   │
 │   ├── models/                      ← 도메인 Pydantic 모델 (공유)
@@ -434,6 +435,12 @@ PYTHONPATH=. pytest tests/vectordb/test_repository.py -v
   - [x] `SearchResult`, `CandidateScore`, `DailyVerdict` 도메인 모델
   - [x] 로깅 정책 — WARNING/INFO/DEBUG 3단계 (Retriever, Reranker, Scorer 각각)
   - [x] 테스트 52개 (retriever 15 + reranker 9 + scorer 17 + verdict_store 11)
+- [x] LangGraph 판정 오케스트레이션 구현 완료
+  - [x] `verdict_graph.py` — score → validate → correct 그래프 워크플로우
+  - [x] 3중 검증: 근거 일치, 일관성 (승률 30%p 급변 감지), 확률 범위
+  - [x] 검증 실패 시 자동 재판정 (최대 2회), `--no-graph`로 비활성화 가능
+  - [x] 노드별 상태 로깅 (진입·완료·분기 결정·오류 상세)
+  - [x] 테스트 17개 통과
 - [x] 판정 결과 영속 저장 구현 완료
   - [x] `VerdictStore` — 선거구별 JSONL 파일로 판정 이력 누적 저장
   - [x] `save()`, `load_all()`, `load_latest()`, `load_range()`, `list_districts()`, `count()`

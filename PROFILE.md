@@ -10,7 +10,7 @@
 |------|------|
 | 기간 | 2026.04 ~ |
 | 역할 | 기획·설계·개발·배포 전 과정 (1인 개발) |
-| 규모 | 백엔드 Python 78파일 / 5,800+ LoC, 프론트엔드 TypeScript 1,200 LoC, 테스트 262개 |
+| 규모 | 백엔드 Python 80파일 / 6,000+ LoC, 프론트엔드 TypeScript 1,200 LoC, 테스트 288개 |
 
 ---
 
@@ -18,7 +18,7 @@
 
 | 레이어 | 기술 |
 |--------|------|
-| 백엔드 | Python 3.11, FastAPI, APScheduler |
+| 백엔드 | Python 3.11, FastAPI, APScheduler, LangGraph |
 | LLM/AI | OpenAI GPT-4o, Anthropic Claude, RAG (자체 구현) |
 | 임베딩 | OpenAI text-embedding-3-small, BAAI/bge-m3, KoSimCSE |
 | 재정렬 | BAAI/bge-reranker-v2-m3 (Cross-encoder) |
@@ -43,6 +43,7 @@
 
 - 수집 파이프라인: 크롤링 → 후보/선거구 자동 태깅 → 청킹 → 임베딩 → VectorDB 저장
 - 판정 파이프라인: 의미 검색 → bi-encoder 필터 + Cross-encoder 정밀 재평가 → LLM 판정 + 확률 정규화
+- **LangGraph 멀티스테이지 오케스트레이션**: 역할별 프롬프트 분리(판세 판정 → 문제점·대응방안 진단) + 3중 검증(근거 일치·일관성·확률 범위) → 실패 시 자동 재판정 (최대 2회). 노드별 구조화 JSONL 로깅으로 전 과정 추적 가능
 
 ### 2. Strategy + Registry 패턴으로 교체 가능한 아키텍처
 
@@ -70,13 +71,26 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 - 그룹별(후보 × 분석 항목) 쿼리 재구성 후 Cross-encoder 적용
 - config.yaml에서 on/off, 모델, top_n 설정 가능
 
-### 4. 트리 구조 프롬프트 + 여론조사 오차범위 기반 LLM 판정
+### 4. 역할별 프롬프트 분리 + 멀티스테이지 LLM 판정
 
-검색 결과를 **후보 → 분석 항목(8축)** 트리 구조로 조직화하여 LLM에 전달. 단순 flat list 대비 분석 품질 향상 및 토큰 효율 제어.
+단일 프롬프트에 판정·분석·전략을 모두 요구하면 각 항목의 깊이가 얕아지는 한계를 **역할별 프롬프트 분리**로 해결. 각 단계가 고유한 추론에 집중하여 응답 품질 향상.
 
-- 카테고리당 score 상위 3건 × 200자 미리보기로 토큰 예산 관리 (~15,000~18,000 토큰)
+```
+score(VERDICT_PROMPT) → validate → pass → diagnose(DIAGNOSIS_PROMPT) → END
+         ↑                  ↓
+         └── correct ←── fail
+```
+
+| 단계 | 프롬프트 | 집중 영역 | 출력 |
+|------|---------|----------|------|
+| **score** | `VERDICT_PROMPT` | 여론조사 수치 + 기사 논조 → 판세 판정 | verdict, win_probability, 근거 요약 |
+| **validate** | — (규칙 기반) | 근거 일치·일관성·확률 범위 3중 검증 | pass/fail 분기 |
+| **diagnose** | `DIAGNOSIS_PROMPT` | 검증된 판정 기반 심층 분석 | 후보별 문제점, 대응방안, 전략 |
+
+- **score → diagnose 파이프라인**: score의 검증된 판정 결과를 diagnose의 입력 컨텍스트로 전달하여 일관된 심층 분석 보장
+- 트리 구조 프롬프트: 후보 → 분석 항목(8축) 구조로 조직화, 카테고리당 상위 3건 × 200자 미리보기로 토큰 예산 관리
 - 여론조사 ±3%p 오차범위 적용 (6%p 이내 격차 = 통계적 동률 판정)
-- 9가지 분석 항목(지지율, 공약 반응, 강점, 약점, 이슈, 지지율 추이, 출마 여론, 선거 전략, 예측)과 검색 쿼리 축 1:1 매칭
+- config 기반 전체 후보 자동 적용 (특정 후보 하드코딩 제거)
 
 ### 5. VectorDB 안전장치 3중 설계
 
@@ -116,7 +130,7 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 
 ## 테스트
 
-총 **277개** 테스트 (262 passed, 15 skipped)
+총 **303개** 테스트 (288 passed, 15 skipped)
 
 | 모듈 | 테스트 수 | 내용 |
 |------|----------|------|
@@ -126,7 +140,7 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 | Embedder | 16 | 3종 임베더 (OpenAI, BGE-M3, KoSimCSE) |
 | Pipeline | 20 | 수집 파이프라인 E2E + 품질 필터 |
 | VectorDB | 48 | 7종 VectorDB 구현체 (CRUD, 필터, 만료 정리) |
-| RAG | 57 | Retriever 15 + Reranker 14 + Scorer 17 + VerdictStore 11 |
+| RAG | 83 | Retriever 15 + Reranker 14 + Scorer 17 + VerdictGraph 26 + VerdictStore 11 |
 | API | 31 | Admin 20 + Scores 6 + Scheduler 5 |
 
 외부 의존성(HTTP, DB, LLM)은 전수 mock 처리. 실제 네트워크 호출 없이 테스트 가능.
@@ -178,7 +192,8 @@ Stage 2: Cross-encoder → (query, chunk) 쌍 정밀 재평가 (상위 N건만, 
 - **End-to-End RAG 시스템**: 데이터 수집부터 LLM 판정, 대시보드 시각화까지 전 과정을 1인 설계·구현
 - **교체 가능한 컴포넌트 아키텍처**: 21종의 구현체(Scraper 3 + Chunker 6 + Embedder 3 + VectorDB 7 + Scorer 2)를 설정 파일만으로 전환
 - **2단계 Reranking**: bi-encoder + Cross-encoder 파이프라인으로 검색 정확도 향상
-- **프롬프트 엔지니어링**: 트리 구조 + 토큰 예산 관리 + 오차범위 기반 통계적 판정 설계
+- **LangGraph 멀티스테이지 오케스트레이션**: 역할별 프롬프트 분리(판정 → 검증 → 진단)로 각 단계의 추론 깊이 확보 + 3중 검증 + 자동 재판정. 구조화 JSONL 로깅으로 노드별 실행 이력 추적
+- **프롬프트 엔지니어링**: 역할별 프롬프트 분리(VERDICT_PROMPT / DIAGNOSIS_PROMPT) + 트리 구조 + 토큰 예산 관리 + 오차범위 기반 통계적 판정 설계
 - **Full-stack 개발**: Python(FastAPI) 백엔드 + TypeScript(Next.js) 프론트엔드 + Docker 배포
 - **데이터 품질 파이프라인**: 기사 전문 수집(11개 셀렉터) + 기사 구조 인식 청킹(제목 prefix + 리드 분리) + 문맥 검증 태깅(±50자 윈도우) + 품질 필터(50자 미만·미태깅 제거)
-- **품질 관리**: 262개 테스트, Pydantic v2 도메인 모델, 3단계 로깅 정책
+- **품질 관리**: 288개 테스트, Pydantic v2 도메인 모델, 3단계 로깅 정책
