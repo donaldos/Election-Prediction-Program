@@ -17,6 +17,7 @@ dependencies = [
     "chromadb>=1.5.8",
     "anthropic>=0.97.0",
     "pinecone>=5.0",
+    "langgraph>=1.2.0",
 ]
 
 [project.optional-dependencies]

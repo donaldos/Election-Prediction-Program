@@ -1,13 +1,24 @@
 """RAG 판정 파이프라인 CLI: retrieve → rerank → score.
 
 사용법:
-    # 판정 모드 (기존)
+    # 판세 판정 (기본)
     PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b
     PYTHONPATH=. python -m rag.pipeline --district busan_bukgu_gap
 
+    # 문제점 진단
+    PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --analysis diagnosis
+
+    # 대응방안/전략 도출
+    PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --analysis strategy
+
+    # 후보 간 비교 분석
+    PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --analysis comparison --candidates "김용남,유의동"
+
+    # 특정 후보만 진단
+    PYTHONPATH=. python -m rag.pipeline --district pyeongtaek_b --analysis diagnosis --candidates "김용남"
+
     # 단발 질의 모드
     PYTHONPATH=. python -m rag.pipeline --query "조국의 평택을 지지율 변화는?"
-    PYTHONPATH=. python -m rag.pipeline --query "한동훈과 박민식 비교" --top-k 10
 """
 from __future__ import annotations
 
@@ -283,12 +294,80 @@ def _run_query_mode(args, config: dict) -> None:
     _print_qa_answer(query, answer, results)
 
 
+def _print_diagnosis(verdict) -> None:
+    if not verdict.diagnosis:
+        return
+    print()
+    print("=" * 60)
+    print(f"🔍 문제점 진단: {verdict.district_name}")
+    print("=" * 60)
+    for d in verdict.diagnosis:
+        print(f"\n  📌 {d.candidate} ({d.party}) — 심각도: {d.severity}")
+        for i, p in enumerate(d.problems, 1):
+            print(f"     문제 {i}: {p}")
+        for i, r in enumerate(d.root_causes, 1):
+            print(f"     원인 {i}: {r}")
+        print(f"     종합: {d.summary}")
+    print("=" * 60)
+
+
+def _print_strategy(verdict) -> None:
+    if not verdict.strategy:
+        return
+    print()
+    print("=" * 60)
+    print(f"🎯 대응방안/전략: {verdict.district_name}")
+    print("=" * 60)
+    for s in verdict.strategy:
+        print(f"\n  📌 {s.candidate} ({s.party}) — 우선순위: {s.priority}")
+        for i, sol in enumerate(s.solutions, 1):
+            print(f"     방안 {i}: {sol}")
+        print(f"     실행 계획:")
+        for ap in s.action_plan:
+            print(f"       • {ap}")
+        print(f"     예상 효과: {s.expected_impact}")
+        print(f"     종합: {s.summary}")
+    print("=" * 60)
+
+
+def _print_comparison(verdict) -> None:
+    if not verdict.comparison:
+        return
+    print()
+    print("=" * 60)
+    print(f"⚖️ 후보 비교 분석: {verdict.district_name}")
+    print("=" * 60)
+    for comp in verdict.comparison:
+        print(f"\n  {comp.candidate_a} vs {comp.candidate_b}")
+        print("-" * 40)
+        for dim in comp.dimensions:
+            print(f"\n  📊 {dim.dimension} — 우위: {dim.advantage}")
+            print(f"     {comp.candidate_a}: {dim.candidate_a_assessment}")
+            print(f"     {comp.candidate_b}: {dim.candidate_b_assessment}")
+        print(f"\n  종합: {comp.overall_edge}")
+        print(f"  요약: {comp.summary}")
+    print("=" * 60)
+
+
 def _run_verdict_mode(args, config: dict) -> None:
     """판정 모드: 선거구별 판세 분석."""
     district = _find_district(config, args.district)
     if not district:
         available = [d["id"] for d in config.get("districts", [])]
         logger.error("선거구 '%s' 없음. 사용 가능: %s", args.district, available)
+        return
+
+    analysis_mode = getattr(args, "analysis", "verdict") or "verdict"
+    target_candidates = None
+    if getattr(args, "candidates", None):
+        target_candidates = [c.strip() for c in args.candidates.split(",")]
+
+    if analysis_mode == "comparison" and (not target_candidates or len(target_candidates) < 2):
+        candidate_names = [c["name"] for c in district.get("candidates", [])]
+        logger.error(
+            "comparison 모드에는 --candidates로 2명 이상 지정 필요. 후보: %s",
+            ", ".join(candidate_names),
+        )
         return
 
     logger.info("컴포넌트 초기화 중…")
@@ -325,7 +404,15 @@ def _run_verdict_mode(args, config: dict) -> None:
         return
 
     scorer = _build_scorer(config)
-    verdict = scorer.score(flat_chunks, district, grouped_chunks=grouped)
+
+    if args.no_graph:
+        verdict = scorer.score(flat_chunks, district, grouped_chunks=grouped)
+    else:
+        from rag.verdict_graph import run_verdict_graph
+        verdict = run_verdict_graph(
+            scorer, flat_chunks, district, grouped_chunks=grouped,
+            mode=analysis_mode, target_candidates=target_candidates,
+        )
 
     from rag.verdict_store import VerdictStore
     store = VerdictStore()
@@ -333,16 +420,30 @@ def _run_verdict_mode(args, config: dict) -> None:
 
     _print_verdict(verdict)
 
+    if verdict.diagnosis:
+        _print_diagnosis(verdict)
+    if verdict.strategy:
+        _print_strategy(verdict)
+    if verdict.comparison:
+        _print_comparison(verdict)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Election Radar RAG 판정 파이프라인")
     parser.add_argument("--district", default=None, help="선거구 ID (pyeongtaek_b | busan_bukgu_gap)")
     parser.add_argument("--query", default=None, help="단발 질의 모드 — 자유 질문")
+    parser.add_argument(
+        "--analysis", default="verdict",
+        choices=["verdict", "diagnosis", "strategy", "comparison"],
+        help="분석 모드 (verdict: 판세, diagnosis: 문제점, strategy: 전략, comparison: 비교)",
+    )
+    parser.add_argument("--candidates", default=None, help="대상 후보 (쉼표 구분, comparison 모드 필수)")
     parser.add_argument("--top-k", type=int, default=None, help="검색 수 (config 우선)")
     parser.add_argument("--min-score", type=float, default=None, help="유사도 임계값 (config 우선)")
     parser.add_argument("--lookback-days", type=int, default=None, help="최근 N일 기사만 검색 (config 우선)")
     parser.add_argument("--purge-days", type=int, default=None, help="N일 이전 벡터 삭제")
     parser.add_argument("--skip-score", action="store_true", help="LLM 판정 생략 (검색 결과만)")
+    parser.add_argument("--no-graph", action="store_true", help="LangGraph 비활성화 (기존 단발 호출)")
     args = parser.parse_args()
 
     if not args.query and not args.district:

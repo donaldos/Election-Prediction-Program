@@ -7,11 +7,20 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from ingestion.base_registry import ComponentRegistry
-from models.score import CandidateReasoning, CandidateScore, DailyVerdict, SearchResult
+from models.score import (
+    CandidateComparison,
+    CandidateDiagnosis,
+    CandidateReasoning,
+    CandidateScore,
+    CandidateStrategy,
+    ComparisonDimension,
+    DailyVerdict,
+    SearchResult,
+)
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
+VERDICT_PROMPT = """\
 당신은 한국 선거 판세 분석 전문가입니다.
 제공된 뉴스 기사 청크와 여론조사 데이터를 분석하여 각 후보의 판세를 판정하고, 후보별로 9가지 분석 항목을 도출합니다.
 
@@ -21,10 +30,6 @@ SYSTEM_PROMPT = """\
 - "균형": 1위 후보와의 격차가 6%p 이내 (오차범위 중첩 구간), 혼재된 신호
 - "열세": 1위 후보와의 격차가 6%p 초과로 뒤처지며, 부정적 보도, 지지 기반 약화 징후
 - 여론조사 수치만으로 판정하지 말고, 오차범위 내에서는 기사 논조·추세·이슈 등을 종합하여 최종 판정
-
-추가 분석:
-- --district pyeongtaek_b 일 경우, 김용남: 현재 판세를 기반으로 지지율을 끌어올리기 위한 구체적 전략 제시
-- --district busan_bukgu_gap 일 경우, 하정우: 현재 판세를 기반으로 지지율을 끌어올리기 위한 구체적 전략 제시
 
 규칙:
 - 모든 후보의 win_probability 합계는 반드시 1.0
@@ -46,13 +51,102 @@ SYSTEM_PROMPT = """\
         "issues": "이슈 — 후보 관련 주요 이슈·논란·쟁점 (스캔들, 정책 논쟁, 당내 갈등 등)",
         "support_trend": "지지율 추이 — 시간 경과에 따른 지지율 변화 방향 (상승세/하락세/정체), 변곡점과 원인",
         "public_opinion": "출마 여론 — 출마에 대한 여론 반응, 지역구 민심, 당내·당외 지지 수준",
-        "strategy": "선거 전략 — 지지율을 끌어올리기 위한 구체적 전략 (지지층 결집, 이슈 선점, 지역 공략 등). 기사 내용에 근거하여 실행 가능한 수준으로 5~7문장 작성",
+        "strategy": "선거 전략 — 지지율을 끌어올리기 위한 구체적 전략 5~7문장",
         "forecast": "예측 — 향후 판세 전망 (추세 변화, 변수, 당선 가능성 근거)"
       }
     }
   ],
   "summary": "선거구 전체 판세 요약 (1~2문장)"
 }"""
+
+DIAGNOSIS_PROMPT = """\
+당신은 한국 선거 전략 컨설턴트입니다.
+아래에 제공되는 판세 판정 결과와 뉴스 기사 청크를 기반으로, 각 후보의 **문제점을 진단**합니다.
+
+분석 원칙:
+- 판정 결과(verdict, win_probability)를 사실로 수용하고, 그 원인을 분석
+- 기사 청크에 근거하여 구체적인 문제점과 근본 원인을 도출
+- severity는 "심각", "주의", "경미" 중 선택
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{
+  "diagnosis": [
+    {
+      "candidate": "후보명",
+      "party": "정당명",
+      "problems": ["문제점 1 (3~5문장)", "문제점 2 (3~5문장)"],
+      "root_causes": ["근본 원인 1", "근본 원인 2"],
+      "severity": "심각|주의|경미",
+      "summary": "종합 진단 (2~3문장)"
+    }
+  ],
+  "summary": "선거구 전체 문제점 진단 요약 (1~2문장)"
+}"""
+
+STRATEGY_PROMPT = """\
+당신은 한국 선거 전략 컨설턴트입니다.
+아래에 제공되는 판세 판정 결과, 문제점 진단, 뉴스 기사 청크를 기반으로 각 후보의 **대응방안과 전략**을 도출합니다.
+
+분석 원칙:
+- 진단된 문제점에 대한 구체적이고 실행 가능한 해결책 제시
+- 기사에 언급된 실제 이슈와 지역 특성을 반영
+- priority는 "긴급", "중요", "보통" 중 선택
+- 각 action_plan 항목은 시간순으로 정렬하여 단기(1주)→중기(2~3주)→장기(선거일까지)로 구분
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{
+  "strategies": [
+    {
+      "candidate": "후보명",
+      "party": "정당명",
+      "solutions": ["해결방안 1 (3~5문장)", "해결방안 2 (3~5문장)"],
+      "action_plan": ["단기: 구체적 실행 계획", "중기: 구체적 실행 계획", "장기: 구체적 실행 계획"],
+      "priority": "긴급|중요|보통",
+      "expected_impact": "예상 효과 (2~3문장)",
+      "summary": "전략 종합 (2~3문장)"
+    }
+  ],
+  "summary": "선거구 전체 전략 요약 (1~2문장)"
+}"""
+
+COMPARISON_PROMPT = """\
+당신은 한국 선거 비교 분석 전문가입니다.
+아래에 제공되는 판세 판정 결과와 뉴스 기사 청크를 기반으로, 지정된 두 후보를 **다차원 비교 분석**합니다.
+
+비교 항목:
+1. 지지율 및 여론조사 — 수치 비교, 추세, 오차범위 고려
+2. 공약 및 정책 — 핵심 공약 비교, 유권자 반응 차이
+3. 조직력 및 캠프 — 선거 조직, 당 지원, 자금력
+4. 언론 및 여론 — 보도 논조, SNS 반응, 이미지
+5. 강점 vs 약점 — 각 후보의 상대적 유불리
+6. 지역 기반 — 지역구 내 지지 기반 및 텃밭 분석
+
+분석 원칙:
+- advantage는 "A 우위", "B 우위", "대등" 중 선택 (A, B는 실제 후보명으로 대체)
+- overall_edge는 종합적으로 어느 후보가 우위인지 명시
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{
+  "comparisons": [
+    {
+      "candidate_a": "후보명A",
+      "candidate_b": "후보명B",
+      "dimensions": [
+        {
+          "dimension": "비교 항목명",
+          "candidate_a_assessment": "후보A 평가 (3~5문장)",
+          "candidate_b_assessment": "후보B 평가 (3~5문장)",
+          "advantage": "A 우위|B 우위|대등"
+        }
+      ],
+      "overall_edge": "종합 우위 판단 (2~3문장)",
+      "summary": "비교 분석 요약 (2~3문장)"
+    }
+  ],
+  "summary": "전체 비교 분석 요약 (1~2문장)"
+}"""
+
+SYSTEM_PROMPT = VERDICT_PROMPT
 
 
 _CATEGORY_ORDER = [
@@ -317,6 +411,79 @@ class AbstractScorer(ABC):
         )
         return verdict
 
+    def diagnose(
+        self,
+        verdict: DailyVerdict,
+        chunks: list[SearchResult],
+        district: dict,
+        *,
+        target_candidates: list[str] | None = None,
+    ) -> list[CandidateDiagnosis]:
+        user_prompt = _build_diagnosis_user_prompt(verdict, chunks, district, target_candidates)
+
+        logger.info("[%s] 문제점 진단 요청 — %s", self.name, district["name"])
+        t0 = time.monotonic()
+        raw = self._call_llm(DIAGNOSIS_PROMPT, user_prompt)
+        elapsed = time.monotonic() - t0
+        logger.info("[%s] 진단 응답 수신 — %.1f초", self.name, elapsed)
+
+        try:
+            return _parse_diagnosis_response(raw)
+        except Exception as e:
+            logger.warning("[%s] 진단 파싱 실패: %s", self.name, e)
+            return []
+
+    def strategize(
+        self,
+        verdict: DailyVerdict,
+        diagnosis: list[CandidateDiagnosis],
+        chunks: list[SearchResult],
+        district: dict,
+        *,
+        target_candidates: list[str] | None = None,
+    ) -> list[CandidateStrategy]:
+        user_prompt = _build_strategy_user_prompt(
+            verdict, diagnosis, chunks, district, target_candidates,
+        )
+
+        logger.info("[%s] 전략 도출 요청 — %s", self.name, district["name"])
+        t0 = time.monotonic()
+        raw = self._call_llm(STRATEGY_PROMPT, user_prompt)
+        elapsed = time.monotonic() - t0
+        logger.info("[%s] 전략 응답 수신 — %.1f초", self.name, elapsed)
+
+        try:
+            return _parse_strategy_response(raw)
+        except Exception as e:
+            logger.warning("[%s] 전략 파싱 실패: %s", self.name, e)
+            return []
+
+    def compare(
+        self,
+        verdict: DailyVerdict,
+        chunks: list[SearchResult],
+        district: dict,
+        candidate_a: str,
+        candidate_b: str,
+    ) -> list[CandidateComparison]:
+        user_prompt = _build_comparison_user_prompt(
+            verdict, chunks, district, candidate_a, candidate_b,
+        )
+
+        logger.info(
+            "[%s] 비교 분석 요청 — %s vs %s", self.name, candidate_a, candidate_b,
+        )
+        t0 = time.monotonic()
+        raw = self._call_llm(COMPARISON_PROMPT, user_prompt)
+        elapsed = time.monotonic() - t0
+        logger.info("[%s] 비교 응답 수신 — %.1f초", self.name, elapsed)
+
+        try:
+            return _parse_comparison_response(raw)
+        except Exception as e:
+            logger.warning("[%s] 비교 파싱 실패: %s", self.name, e)
+            return []
+
     @staticmethod
     def _empty_verdict(district: dict) -> DailyVerdict:
         candidates = district.get("candidates", [])
@@ -344,3 +511,120 @@ class AbstractScorer(ABC):
 
 
 ScorerRegistry = ComponentRegistry(AbstractScorer, "Scorer")
+
+
+# ---------------------------------------------------------------------------
+# 분석 모드별 유저 프롬프트 빌더 + 파서
+# ---------------------------------------------------------------------------
+
+def _verdict_context_block(verdict: DailyVerdict) -> str:
+    lines = ["## 판정 결과 (score 노드 출력)"]
+    for s in verdict.candidates:
+        lines.append(f"- {s.candidate} ({s.party}): {s.verdict}, 승률 {s.win_probability:.1%}")
+    lines.append(f"요약: {verdict.summary}")
+    return "\n".join(lines)
+
+
+def _chunks_context_block(chunks: list[SearchResult], limit: int = 10) -> str:
+    lines = [f"## 참고 뉴스 청크 (상위 {min(len(chunks), limit)}/{len(chunks)}건)"]
+    for i, c in enumerate(chunks[:limit], 1):
+        text_preview = c.text[:200].replace("\n", " ")
+        lines.append(f"[{i}] {c.title} ({c.source}, {c.published_at:%Y-%m-%d})")
+        lines.append(f"    {text_preview}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _build_diagnosis_user_prompt(
+    verdict: DailyVerdict,
+    chunks: list[SearchResult],
+    district: dict,
+    target_candidates: list[str] | None,
+) -> str:
+    lines = [f"## 선거구: {district['name']}\n"]
+    lines.append(_verdict_context_block(verdict))
+    lines.append("")
+    lines.append(_chunks_context_block(chunks))
+    if target_candidates:
+        lines.append(f"\n## 분석 대상 후보: {', '.join(target_candidates)}")
+        lines.append("위 후보에 대해서만 문제점을 진단하세요.")
+    else:
+        lines.append("\n모든 후보에 대해 문제점을 진단하세요.")
+    return "\n".join(lines)
+
+
+def _build_strategy_user_prompt(
+    verdict: DailyVerdict,
+    diagnosis: list[CandidateDiagnosis],
+    chunks: list[SearchResult],
+    district: dict,
+    target_candidates: list[str] | None,
+) -> str:
+    lines = [f"## 선거구: {district['name']}\n"]
+    lines.append(_verdict_context_block(verdict))
+    lines.append("")
+    lines.append("## 문제점 진단 결과 (diagnose 노드 출력)")
+    for d in diagnosis:
+        lines.append(f"### {d.candidate} ({d.party}) — 심각도: {d.severity}")
+        for i, p in enumerate(d.problems, 1):
+            lines.append(f"  문제 {i}: {p}")
+        for i, r in enumerate(d.root_causes, 1):
+            lines.append(f"  원인 {i}: {r}")
+        lines.append("")
+    lines.append(_chunks_context_block(chunks))
+    if target_candidates:
+        lines.append(f"\n## 분석 대상 후보: {', '.join(target_candidates)}")
+        lines.append("위 후보에 대해서만 대응방안과 전략을 도출하세요.")
+    else:
+        lines.append("\n모든 후보에 대해 대응방안과 전략을 도출하세요.")
+    return "\n".join(lines)
+
+
+def _build_comparison_user_prompt(
+    verdict: DailyVerdict,
+    chunks: list[SearchResult],
+    district: dict,
+    candidate_a: str,
+    candidate_b: str,
+) -> str:
+    lines = [f"## 선거구: {district['name']}\n"]
+    lines.append(_verdict_context_block(verdict))
+    lines.append("")
+    lines.append(_chunks_context_block(chunks))
+    lines.append(f"\n## 비교 대상: {candidate_a} vs {candidate_b}")
+    lines.append("위 두 후보를 6가지 차원에서 비교 분석하세요.")
+    return "\n".join(lines)
+
+
+def _strip_markdown_fence(raw: str) -> str:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+    return text.strip()
+
+
+def _parse_diagnosis_response(raw: str) -> list[CandidateDiagnosis]:
+    data = json.loads(_strip_markdown_fence(raw))
+    return [CandidateDiagnosis(**item) for item in data.get("diagnosis", [])]
+
+
+def _parse_strategy_response(raw: str) -> list[CandidateStrategy]:
+    data = json.loads(_strip_markdown_fence(raw))
+    return [CandidateStrategy(**item) for item in data.get("strategies", [])]
+
+
+def _parse_comparison_response(raw: str) -> list[CandidateComparison]:
+    data = json.loads(_strip_markdown_fence(raw))
+    results = []
+    for item in data.get("comparisons", []):
+        dims = [ComparisonDimension(**d) for d in item.get("dimensions", [])]
+        results.append(CandidateComparison(
+            candidate_a=item["candidate_a"],
+            candidate_b=item["candidate_b"],
+            dimensions=dims,
+            overall_edge=item["overall_edge"],
+            summary=item["summary"],
+        ))
+    return results
