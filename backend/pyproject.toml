@@ -18,11 +18,16 @@ dependencies = [
     "anthropic>=0.97.0",
     "pinecone>=5.0",
     "langgraph>=1.2.0",
+    "sentence-transformers>=5.4.1",
 ]
 
 [project.optional-dependencies]
 reranker = [
     "sentence-transformers>=3.0",
+]
+sheets = [
+    "gspread>=6.0",
+    "google-auth>=2.0",
 ]
 dev = [
     "pytest>=8.0",

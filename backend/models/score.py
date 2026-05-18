@@ -91,6 +91,37 @@ class CandidateScore(BaseModel):
     chunk_count: int
 
 
+class PollMethodAnalysis(BaseModel):
+    """조사 방법론별 분석."""
+
+    method: str
+    characteristics: str
+    reliability_note: str
+    results_summary: str
+
+
+class CandidatePollTrend(BaseModel):
+    """후보별 여론조사 추이."""
+
+    candidate: str
+    party: str
+    latest_support: float
+    trend_direction: str
+    trend_description: str
+
+
+class PollTrendAnalysis(BaseModel):
+    """여론조사 동향 종합 분석."""
+
+    total_surveys: int
+    analysis_period: str
+    candidate_trends: list[CandidatePollTrend]
+    method_analysis: list[PollMethodAnalysis]
+    key_findings: list[str]
+    trend_summary: str
+    reliability_assessment: str
+
+
 class DailyVerdict(BaseModel):
     """선거구별 일일 판정 결과. API 응답 단위."""
 
@@ -104,3 +135,4 @@ class DailyVerdict(BaseModel):
     diagnosis: list[CandidateDiagnosis] | None = None
     strategy: list[CandidateStrategy] | None = None
     comparison: list[CandidateComparison] | None = None
+    poll_analysis: PollTrendAnalysis | None = None

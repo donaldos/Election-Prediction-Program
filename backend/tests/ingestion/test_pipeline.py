@@ -8,6 +8,7 @@ import pytest
 from ingestion.pipeline import IngestionPipeline
 from models.article import RawArticle
 from models.chunk import Chunk, ChunkWithEmbedding
+from models.poll import PollMeta
 
 
 SAMPLE_CONFIG = {
@@ -368,3 +369,208 @@ class TestFilterChunks:
         chunks = [self._make_chunk(text=text_49)]
         result = pipeline._filter_chunks(chunks)
         assert len(result) == 0
+
+
+# ── 여론조사 동기화 테스트 ────────────────────────────
+
+SAMPLE_POLL_META = [
+    PollMeta(
+        survey_date=datetime(2026, 5, 14).date(),
+        district_id="pyeongtaek_b",
+        pollster="뉴스1",
+        district_name="평택을",
+        sample_size=804,
+        margin_of_error=3.5,
+        source_url="https://example.com/poll/1",
+    ),
+    PollMeta(
+        survey_date=datetime(2026, 5, 7).date(),
+        district_id="busan_bukgu_gap",
+        pollster="SBS",
+        district_name="부산북구갑",
+        sample_size=802,
+        margin_of_error=3.5,
+        source_url="",
+    ),
+]
+
+POLLS_CONFIG = {
+    **SAMPLE_CONFIG,
+    "polls": {
+        "type": "google_sheets",
+        "params": {
+            "spreadsheet_id": "fake_id",
+            "credentials_path": "fake.json",
+        },
+    },
+}
+
+
+class TestPollSync:
+
+    def test_sync_polls_creates_articles_from_source_urls(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ingestion.pipeline.DATA_DIR", tmp_path)
+
+        pipeline = IngestionPipeline(POLLS_CONFIG)
+        body = "여론조사 결과에 따르면 김용남 후보가 29%로 선두를 달리고 있다. " * 5
+
+        with (
+            patch("rag.gsheets_poll_store.GoogleSheetsPollStore") as MockGSheets,
+            patch("rag.jsonl_poll_store.JsonlPollStore") as MockJsonl,
+            patch("ingestion.scraper.base.fetch_article_body", return_value=body),
+            patch("ingestion.scraper.url_store.ScrapedUrlStore") as MockUrlStore,
+        ):
+            mock_gs = MagicMock()
+            mock_gs.load_all.return_value = []
+            mock_gs.load_meta.return_value = SAMPLE_POLL_META
+            MockGSheets.return_value = mock_gs
+
+            mock_jsonl = MagicMock()
+            MockJsonl.return_value = mock_jsonl
+
+            mock_url_store = MagicMock()
+            mock_url_store.load.return_value = set()
+            MockUrlStore.return_value = mock_url_store
+
+            articles = pipeline._sync_polls()
+
+        assert len(articles) == 1
+        assert articles[0].source == "poll"
+        assert articles[0].pollster == "뉴스1"
+        assert articles[0].poll_survey_date == "2026-05-14"
+        assert articles[0].sample_size == 804
+        assert articles[0].margin_of_error == 3.5
+        assert articles[0].district_id == "pyeongtaek_b"
+        mock_jsonl.save.assert_called_once()
+
+    def test_sync_polls_skips_already_scraped_urls(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ingestion.pipeline.DATA_DIR", tmp_path)
+
+        pipeline = IngestionPipeline(POLLS_CONFIG)
+
+        with (
+            patch("rag.gsheets_poll_store.GoogleSheetsPollStore") as MockGSheets,
+            patch("rag.jsonl_poll_store.JsonlPollStore") as MockJsonl,
+            patch("ingestion.scraper.base.fetch_article_body") as mock_fetch,
+            patch("ingestion.scraper.url_store.ScrapedUrlStore") as MockUrlStore,
+        ):
+            mock_gs = MagicMock()
+            mock_gs.load_all.return_value = []
+            mock_gs.load_meta.return_value = SAMPLE_POLL_META
+            MockGSheets.return_value = mock_gs
+            MockJsonl.return_value = MagicMock()
+
+            mock_url_store = MagicMock()
+            mock_url_store.load.return_value = {"https://example.com/poll/1"}
+            MockUrlStore.return_value = mock_url_store
+
+            articles = pipeline._sync_polls()
+
+        assert len(articles) == 0
+        mock_fetch.assert_not_called()
+
+    def test_sync_polls_skips_empty_source_urls(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ingestion.pipeline.DATA_DIR", tmp_path)
+
+        metas_no_url = [
+            PollMeta(
+                survey_date=datetime(2026, 5, 14).date(),
+                district_id="pyeongtaek_b",
+                pollster="뉴스1",
+                source_url="",
+            ),
+        ]
+
+        pipeline = IngestionPipeline(POLLS_CONFIG)
+
+        with (
+            patch("rag.gsheets_poll_store.GoogleSheetsPollStore") as MockGSheets,
+            patch("rag.jsonl_poll_store.JsonlPollStore") as MockJsonl,
+            patch("ingestion.scraper.base.fetch_article_body") as mock_fetch,
+            patch("ingestion.scraper.url_store.ScrapedUrlStore") as MockUrlStore,
+        ):
+            mock_gs = MagicMock()
+            mock_gs.load_all.return_value = []
+            mock_gs.load_meta.return_value = metas_no_url
+            MockGSheets.return_value = mock_gs
+            MockJsonl.return_value = MagicMock()
+            mock_url_store = MagicMock()
+            mock_url_store.load.return_value = set()
+            MockUrlStore.return_value = mock_url_store
+
+            articles = pipeline._sync_polls()
+
+        assert len(articles) == 0
+        mock_fetch.assert_not_called()
+
+    def test_sync_polls_skipped_for_jsonl_type(self):
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        articles = pipeline._sync_polls()
+        assert articles == []
+
+    def test_skip_polls_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ingestion.pipeline.DATA_DIR", tmp_path)
+
+        pipeline = IngestionPipeline(POLLS_CONFIG)
+
+        with (
+            patch.object(pipeline, "_sync_polls") as mock_sync,
+            patch.object(pipeline, "_run_naver", return_value=SAMPLE_ARTICLES),
+            patch.object(pipeline, "_run_political", return_value=[]),
+            patch.object(pipeline, "_chunk", return_value=SAMPLE_CHUNKS),
+            patch.object(pipeline, "_embed", return_value=SAMPLE_EMBEDDED),
+            patch.object(pipeline, "_store", return_value=1),
+        ):
+            pipeline.run(skip_polls=True)
+
+        mock_sync.assert_not_called()
+
+    def test_poll_metadata_in_chunk(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ingestion.pipeline.DATA_DIR", tmp_path)
+
+        poll_article = RawArticle(
+            url="https://example.com/poll/1",
+            source="poll",
+            title="[여론조사] 뉴스1 2026-05-14 평택을",
+            body="평택을 여론조사 결과가 발표되었다. 김용남 후보가 29% 선두. " * 5,
+            published_at=datetime(2026, 5, 14),
+            district_id="pyeongtaek_b",
+            pollster="뉴스1",
+            poll_survey_date="2026-05-14",
+            sample_size=804,
+            margin_of_error=3.5,
+        )
+
+        pipeline = IngestionPipeline(SAMPLE_CONFIG)
+        chunks = pipeline._chunk([poll_article])
+
+        assert len(chunks) >= 1
+        assert chunks[0].pollster == "뉴스1"
+        assert chunks[0].poll_survey_date == "2026-05-14"
+        assert chunks[0].sample_size == 804
+        assert chunks[0].margin_of_error == 3.5
+        assert chunks[0].source == "poll"
+
+    def test_poll_article_body_too_short_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ingestion.pipeline.DATA_DIR", tmp_path)
+
+        pipeline = IngestionPipeline(POLLS_CONFIG)
+
+        with (
+            patch("rag.gsheets_poll_store.GoogleSheetsPollStore") as MockGSheets,
+            patch("rag.jsonl_poll_store.JsonlPollStore") as MockJsonl,
+            patch("ingestion.scraper.base.fetch_article_body", return_value="짧은 본문"),
+            patch("ingestion.scraper.url_store.ScrapedUrlStore") as MockUrlStore,
+        ):
+            mock_gs = MagicMock()
+            mock_gs.load_all.return_value = []
+            mock_gs.load_meta.return_value = SAMPLE_POLL_META
+            MockGSheets.return_value = mock_gs
+            MockJsonl.return_value = MagicMock()
+            mock_url_store = MagicMock()
+            mock_url_store.load.return_value = set()
+            MockUrlStore.return_value = mock_url_store
+
+            articles = pipeline._sync_polls()
+
+        assert len(articles) == 0

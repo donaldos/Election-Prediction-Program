@@ -18,6 +18,20 @@ class PollEntry(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+class PollMeta(BaseModel):
+    """polls_meta 시트의 조사 단위 메타데이터."""
+
+    survey_date: date
+    district_id: str
+    pollster: str
+    district_name: str = ""
+    sample_size: int = 0
+    margin_of_error: float = 0.0
+    method: str = ""
+    source_url: str = ""
+    notes: str = ""
+
+
 class PollCandidateSupport(BaseModel):
     candidate: str
     party: str

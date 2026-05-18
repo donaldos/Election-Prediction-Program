@@ -1,4 +1,4 @@
-"""수집 파이프라인 오케스트레이터: scrape → chunk → embed → store.
+"""수집 파이프라인 오케스트레이터: sync_polls → scrape → chunk → embed → store.
 
 사용법:
     PYTHONPATH=. python -m ingestion.pipeline
@@ -7,6 +7,7 @@
     PYTHONPATH=. python -m ingestion.pipeline --skip-embed
     PYTHONPATH=. python -m ingestion.pipeline --skip-chunk
     PYTHONPATH=. python -m ingestion.pipeline --skip-store
+    PYTHONPATH=. python -m ingestion.pipeline --skip-polls     # 여론조사 동기화 생략
 """
 from __future__ import annotations
 
@@ -50,8 +51,15 @@ class IngestionPipeline:
         skip_chunk: bool = False,
         skip_embed: bool = False,
         skip_store: bool = False,
+        skip_polls: bool = False,
     ) -> None:
+        poll_articles: list[RawArticle] = []
+        if not skip_polls:
+            poll_articles = self._sync_polls()
+
         articles = self._scrape(scraper_name=scraper_name, days=days)
+        articles.extend(poll_articles)
+
         if not articles:
             logger.info("수집된 기사가 없습니다. 파이프라인 종료.")
             return
@@ -111,6 +119,86 @@ class IngestionPipeline:
             len(articles), len(chunks), len(embedded), stored,
         )
         logger.info("=" * 50)
+
+    # ── polls sync ───────────────────────────────────────
+
+    def _sync_polls(self) -> list[RawArticle]:
+        """Google Sheets → polls.jsonl 동기화 + source_url 기사 수집."""
+        polls_cfg = self._config.get("polls", {})
+        poll_type = polls_cfg.get("type", "jsonl")
+
+        if poll_type != "google_sheets":
+            logger.info("여론조사 저장소가 google_sheets가 아닙니다 — 동기화 생략")
+            return []
+
+        logger.info("=" * 50)
+        logger.info("여론조사 Google Sheets 동기화 시작")
+        logger.info("=" * 50)
+
+        from rag.gsheets_poll_store import GoogleSheetsPollStore
+        from rag.jsonl_poll_store import JsonlPollStore
+
+        params = polls_cfg.get("params", {})
+
+        try:
+            gsheets_store = GoogleSheetsPollStore(**params)
+            entries = gsheets_store.load_all()
+            metas = gsheets_store.load_meta()
+        except Exception as e:
+            logger.warning("Google Sheets 연결 실패 — %s", e)
+            return []
+
+        jsonl_store = JsonlPollStore()
+        jsonl_store.save(entries)
+        logger.info("polls.jsonl 동기화 완료 — %d건", len(entries))
+
+        poll_articles = self._scrape_poll_articles(metas)
+        return poll_articles
+
+    def _scrape_poll_articles(self, metas) -> list[RawArticle]:
+        """polls_meta의 source_url에서 기사를 수집한다."""
+        from ingestion.scraper.base import fetch_article_body
+        from ingestion.scraper.url_store import ScrapedUrlStore
+
+        url_store = ScrapedUrlStore()
+
+        urls_to_fetch = []
+        for meta in metas:
+            url = meta.source_url.strip()
+            if url and not url_store.contains(url):
+                urls_to_fetch.append((url, meta))
+
+        if not urls_to_fetch:
+            logger.info("여론조사 기사 — 수집할 신규 URL 없음")
+            return []
+
+        logger.info("여론조사 기사 수집 — %d건 URL", len(urls_to_fetch))
+
+        articles: list[RawArticle] = []
+        for url, meta in urls_to_fetch:
+            body = fetch_article_body(url)
+            if not body or len(body) < 50:
+                logger.warning("여론조사 기사 본문 추출 실패 — %s", url)
+                continue
+
+            title = f"[여론조사] {meta.pollster} {meta.survey_date} {meta.district_name}"
+            article = RawArticle(
+                url=url,
+                source="poll",
+                title=title,
+                body=body,
+                published_at=datetime.combine(meta.survey_date, datetime.min.time()),
+                district_id=meta.district_id,
+                pollster=meta.pollster,
+                poll_survey_date=meta.survey_date.isoformat(),
+                sample_size=meta.sample_size,
+                margin_of_error=meta.margin_of_error,
+            )
+            articles.append(article)
+            url_store.add(url, source="poll", title=title)
+
+        logger.info("여론조사 기사 수집 완료 — %d건", len(articles))
+        return articles
 
     # ── scrape ───────────────────────────────────────────
 
@@ -224,6 +312,10 @@ class IngestionPipeline:
                 "published_at": article.published_at,
                 "candidate": article.candidate,
                 "district_id": article.district_id,
+                "pollster": article.pollster,
+                "poll_survey_date": article.poll_survey_date,
+                "sample_size": article.sample_size,
+                "margin_of_error": article.margin_of_error,
             }
             all_chunks.extend(chunker.chunk(article.body, metadata))
 
@@ -340,6 +432,7 @@ def main() -> None:
     parser.add_argument("--skip-chunk", action="store_true", help="청킹·임베딩 생략")
     parser.add_argument("--skip-embed", action="store_true", help="임베딩·저장 생략")
     parser.add_argument("--skip-store", action="store_true", help="VectorDB 저장 생략")
+    parser.add_argument("--skip-polls", action="store_true", help="여론조사 동기화 생략")
     args = parser.parse_args()
 
     config = _load_config()
@@ -350,6 +443,7 @@ def main() -> None:
         skip_chunk=args.skip_chunk,
         skip_embed=args.skip_embed,
         skip_store=args.skip_store,
+        skip_polls=args.skip_polls,
     )
 
 

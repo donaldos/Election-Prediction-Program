@@ -191,8 +191,8 @@ def list_districts():
 # ── 여론조사 관리 ─────────────────────────────────
 
 def _get_poll_store():
-    from rag.poll_store import PollStore
-    return PollStore()
+    from app.core.dependencies import get_poll_store
+    return get_poll_store()
 
 
 def _entry_to_response(e) -> PollEntryResponse:
@@ -239,7 +239,10 @@ def save_polls(req: PollBatchRequest):
     ]
 
     store = _get_poll_store()
-    saved = store.save(entries)
+    try:
+        saved = store.save(entries)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     logger.info("여론조사 저장 — %d건", len(saved))
     return PollListResponse(
         count=len(saved),
@@ -250,14 +253,20 @@ def save_polls(req: PollBatchRequest):
 @router.delete("/polls/{entry_id}", response_model=PollDeleteResponse)
 def delete_poll(entry_id: str):
     store = _get_poll_store()
-    if not store.delete(entry_id):
-        raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다.")
+    try:
+        if not store.delete(entry_id):
+            raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다.")
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return PollDeleteResponse(deleted=1, message="삭제 완료")
 
 
 @router.delete("/polls", response_model=PollDeleteResponse)
 def delete_all_polls(district_id: str | None = None):
     store = _get_poll_store()
-    deleted = store.delete_all(district_id)
+    try:
+        deleted = store.delete_all(district_id)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     scope = f"선거구 {district_id}" if district_id else "전체"
     return PollDeleteResponse(deleted=deleted, message=f"{scope} 여론조사 {deleted}건 삭제 완료")

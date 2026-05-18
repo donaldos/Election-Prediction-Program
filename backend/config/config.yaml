@@ -145,6 +145,20 @@ vectordb:
     # region: us-east-1
 
 # ------------------------------------------------------------
+# 여론조사 저장소 설정
+# ------------------------------------------------------------
+polls:
+  type: google_sheets                   # jsonl | google_sheets
+  params:
+    # ── google_sheets 전용 (.env에 GOOGLE_SHEETS_CREDENTIALS 필요) ──
+    spreadsheet_id: "1pnow6Ou-QMmhRX8qS5GFBwesk4Zl65tPytSXWINLMMQ"
+    meta_sheet: polls_meta
+    candidates_sheet: polls_candidates
+
+    # ── jsonl 전용 (type: jsonl 전환 시) ──
+    # path: data/polls.jsonl
+
+# ------------------------------------------------------------
 # RAG 판정 엔진 설정
 # ------------------------------------------------------------
 rag:

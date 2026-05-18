@@ -22,6 +22,11 @@ class Chunk(BaseModel):
 
     chunker_type: str
 
+    pollster: str = ""
+    poll_survey_date: str = ""
+    sample_size: int = 0
+    margin_of_error: float = 0.0
+
 
 def _deterministic_id(article_url: str, chunk_index: int) -> str:
     key = f"{article_url}::chunk::{chunk_index}"

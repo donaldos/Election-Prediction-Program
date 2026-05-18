@@ -22,6 +22,7 @@ from models.score import (
     CandidateScore,
     CandidateStrategy,
     DailyVerdict,
+    PollTrendAnalysis,
     SearchResult,
 )
 from rag.graph_logger import GraphLogger
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 2
 PROBABILITY_CHANGE_THRESHOLD = 0.30
 
-AnalysisMode = Literal["verdict", "diagnosis", "strategy", "comparison"]
+AnalysisMode = Literal["verdict", "diagnosis", "strategy", "comparison", "opinion_polls"]
 
 
 class VerdictState(TypedDict):
@@ -53,6 +54,9 @@ class VerdictState(TypedDict):
     diagnosis: list[CandidateDiagnosis] | None
     strategy: list[CandidateStrategy] | None
     comparison: list[CandidateComparison] | None
+    poll_entries: list | None
+    poll_metas: list | None
+    poll_analysis: PollTrendAnalysis | None
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +300,41 @@ def compare_node(state: VerdictState) -> dict:
     return {"comparison": comparisons}
 
 
+def analyze_polls_node(state: VerdictState) -> dict:
+    """여론조사 분석 노드 — Scorer.analyze_polls() 호출."""
+    scorer = state["scorer"]
+    district = state["district"]
+    chunks = state["chunks"]
+    poll_entries = state.get("poll_entries") or []
+    poll_metas = state.get("poll_metas") or []
+    gl = state["graph_logger"]
+
+    logger.info(
+        "[analyze_polls 노드] 진입 — %s, 조사 %d건, 메타 %d건",
+        district["name"], len(poll_entries), len(poll_metas),
+    )
+    gl.log_analysis_enter("analyze_polls", f"조사 {len(poll_entries)}건")
+
+    verdict = scorer.analyze_polls(
+        poll_entries, poll_metas, district,
+        chunks=chunks if chunks else None,
+    )
+
+    logger.info(
+        "[analyze_polls 노드] 완료 — %s",
+        ", ".join(
+            f"{s.candidate}={s.verdict}({s.win_probability:.1%})"
+            for s in verdict.candidates
+        ),
+    )
+    gl.log_analysis_exit("analyze_polls", len(verdict.candidates))
+
+    return {
+        "verdict": verdict,
+        "poll_analysis": verdict.poll_analysis,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 검증 함수
 # ---------------------------------------------------------------------------
@@ -371,10 +410,11 @@ def _validate_probability(verdict: DailyVerdict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _GRAPH_DESCRIPTIONS = {
-    "verdict":    "score → validate → END",
-    "diagnosis":  "score → validate → diagnose → END",
-    "strategy":   "score → validate → diagnose → strategize → END",
-    "comparison": "score → validate → compare → END",
+    "verdict":       "score → validate → END",
+    "diagnosis":     "score → validate → diagnose → END",
+    "strategy":      "score → validate → diagnose → strategize → END",
+    "comparison":    "score → validate → compare → END",
+    "opinion_polls": "analyze_polls → END",
 }
 
 
@@ -421,6 +461,12 @@ def build_verdict_graph(mode: AnalysisMode = "verdict") -> StateGraph:
             "max_retry": "compare",
         })
         graph.add_edge("compare", END)
+    elif mode == "opinion_polls":
+        graph = StateGraph(VerdictState)
+        graph.add_node("analyze_polls", analyze_polls_node)
+        graph.set_entry_point("analyze_polls")
+        graph.add_edge("analyze_polls", END)
+        return graph.compile()
 
     graph.add_edge("correct", "score")
 
@@ -439,6 +485,8 @@ def run_verdict_graph(
     *,
     mode: AnalysisMode = "verdict",
     target_candidates: list[str] | None = None,
+    poll_entries: list | None = None,
+    poll_metas: list | None = None,
 ) -> DailyVerdict:
     """LangGraph 멀티스테이지 오케스트레이션 실행."""
     store = VerdictStore()
@@ -469,6 +517,9 @@ def run_verdict_graph(
         "diagnosis": None,
         "strategy": None,
         "comparison": None,
+        "poll_entries": poll_entries,
+        "poll_metas": poll_metas,
+        "poll_analysis": None,
     }
 
     logger.info("=" * 60)
@@ -500,6 +551,7 @@ def run_verdict_graph(
     verdict.diagnosis = final_state.get("diagnosis")
     verdict.strategy = final_state.get("strategy")
     verdict.comparison = final_state.get("comparison")
+    verdict.poll_analysis = final_state.get("poll_analysis")
 
     logger.info("=" * 60)
     if retry_count > 0 and errors:
@@ -528,6 +580,12 @@ def run_verdict_graph(
         logger.info("  전략: %d명", len(verdict.strategy))
     if verdict.comparison:
         logger.info("  비교: %d건", len(verdict.comparison))
+    if verdict.poll_analysis:
+        logger.info(
+            "  여론조사 분석: %d회 조사, %d명 추이",
+            verdict.poll_analysis.total_surveys,
+            len(verdict.poll_analysis.candidate_trends),
+        )
     logger.info("=" * 60)
 
     gl.log_graph_end(

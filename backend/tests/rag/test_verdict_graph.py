@@ -9,10 +9,13 @@ import pytest
 from models.score import (
     CandidateComparison,
     CandidateDiagnosis,
+    CandidatePollTrend,
     CandidateScore,
     CandidateStrategy,
     ComparisonDimension,
     DailyVerdict,
+    PollMethodAnalysis,
+    PollTrendAnalysis,
     SearchResult,
 )
 from rag.verdict_graph import (
@@ -425,3 +428,101 @@ class TestAnalysisModes:
         call_args = mock_scorer.compare.call_args
         assert call_args[0][3] == "김용남"
         assert call_args[0][4] == "유의동"
+
+    def test_graph_compiles_opinion_polls_mode(self):
+        graph = build_verdict_graph(mode="opinion_polls")
+        assert graph is not None
+
+    def test_opinion_polls_mode_calls_analyze_polls(self):
+        from datetime import date
+        from models.poll import PollEntry, PollMeta
+
+        poll_entries = [
+            PollEntry(
+                district_id="pyeongtaek_b", candidate="김용남",
+                party="더불어민주당", support=38.5, pollster="한국갤럽",
+                survey_date=date(2026, 5, 10),
+            ),
+            PollEntry(
+                district_id="pyeongtaek_b", candidate="유의동",
+                party="국민의힘", support=35.2, pollster="한국갤럽",
+                survey_date=date(2026, 5, 10),
+            ),
+        ]
+        poll_metas = [
+            PollMeta(
+                survey_date=date(2026, 5, 10), district_id="pyeongtaek_b",
+                pollster="한국갤럽", method="무선전화면접",
+                sample_size=1000, margin_of_error=3.1,
+            ),
+        ]
+
+        poll_analysis = PollTrendAnalysis(
+            total_surveys=1,
+            analysis_period="2026-05-10 ~ 2026-05-10",
+            candidate_trends=[
+                CandidatePollTrend(
+                    candidate="김용남", party="더불어민주당",
+                    latest_support=38.5, trend_direction="정체",
+                    trend_description="테스트",
+                ),
+            ],
+            method_analysis=[
+                PollMethodAnalysis(
+                    method="무선전화면접", characteristics="테스트",
+                    reliability_note="테스트", results_summary="테스트",
+                ),
+            ],
+            key_findings=["발견 1"],
+            trend_summary="테스트 요약",
+            reliability_assessment="테스트 신뢰성",
+        )
+
+        verdict_with_polls = _make_verdict()
+        verdict_with_polls.poll_analysis = poll_analysis
+        verdict_with_polls.analysis_mode = "opinion_polls"
+
+        mock_scorer = MagicMock()
+        mock_scorer.analyze_polls.return_value = verdict_with_polls
+
+        with patch("rag.verdict_graph.VerdictStore") as MockStore:
+            MockStore.return_value.load_latest.return_value = None
+            result = run_verdict_graph(
+                mock_scorer, [], DISTRICT,
+                mode="opinion_polls",
+                poll_entries=poll_entries,
+                poll_metas=poll_metas,
+            )
+
+        mock_scorer.analyze_polls.assert_called_once()
+        assert result.analysis_mode == "opinion_polls"
+        assert result.poll_analysis is not None
+        assert result.poll_analysis.total_surveys == 1
+        assert len(result.poll_analysis.candidate_trends) == 1
+        assert len(result.poll_analysis.method_analysis) == 1
+
+    def test_opinion_polls_mode_no_score_called(self):
+        from datetime import date
+        from models.poll import PollEntry
+
+        poll_entries = [
+            PollEntry(
+                district_id="pyeongtaek_b", candidate="김용남",
+                party="더불어민주당", support=38.5, pollster="한국갤럽",
+                survey_date=date(2026, 5, 10),
+            ),
+        ]
+
+        mock_scorer = MagicMock()
+        mock_scorer.analyze_polls.return_value = _make_verdict()
+
+        with patch("rag.verdict_graph.VerdictStore") as MockStore:
+            MockStore.return_value.load_latest.return_value = None
+            run_verdict_graph(
+                mock_scorer, [], DISTRICT,
+                mode="opinion_polls",
+                poll_entries=poll_entries,
+            )
+
+        mock_scorer.score.assert_not_called()
+        mock_scorer.analyze_polls.assert_called_once()

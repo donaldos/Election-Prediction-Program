@@ -10,11 +10,14 @@ from ingestion.base_registry import ComponentRegistry
 from models.score import (
     CandidateComparison,
     CandidateDiagnosis,
+    CandidatePollTrend,
     CandidateReasoning,
     CandidateScore,
     CandidateStrategy,
     ComparisonDimension,
     DailyVerdict,
+    PollMethodAnalysis,
+    PollTrendAnalysis,
     SearchResult,
 )
 
@@ -146,6 +149,71 @@ COMPARISON_PROMPT = """\
   "summary": "전체 비교 분석 요약 (1~2문장)"
 }"""
 
+OPINION_POLLS_PROMPT = """\
+당신은 한국 선거 여론조사 분석 전문가입니다.
+제공된 여론조사 데이터를 종합적으로 분석하여 여론조사 동향을 판정합니다.
+
+## 조사 방법론 특성
+
+1. 무선전화면접 (Wireless Phone Interview)
+   - 조사원이 직접 전화하여 질문하므로 응답 신뢰도가 높음
+   - 응답률이 낮은 편 (5~10%)이나, 응답자의 적극성이 높음
+   - 사회적 바람직성 편향(social desirability bias) 가능성 — 진보 정당 지지율이 약간 높게 나오는 경향
+   - 조사 비용이 높고 시간이 오래 걸림
+
+2. 무선전화ARS (Automated Response System)
+   - 자동응답시스템으로 대규모 조사 가능
+   - 조사원 편향 없이 일관된 질문 가능
+   - 응답률이 매우 낮은 편 (2~3%)
+   - 고연령층의 응답률이 상대적으로 높아 연령대 편향 가능
+   - 짧은 시간에 많은 표본 확보 가능
+   - ARS 조사는 면접 조사 대비 보수 정당 지지율이 높게 나오는 경향
+
+## 분석 원칙
+- 동일 조사기관의 시계열 변화를 우선 비교 (조사기관 간 비교보다 조사기관 내 변화가 더 의미 있음)
+- 조사 방법론이 다른 조사 간 단순 수치 비교를 지양하고, 방법론 차이를 명시
+- 오차범위 내 변동은 "추세 변화"로 해석하지 않음
+- 표본 크기와 신뢰수준을 고려한 분석
+- 선거일(2026-06-03) 기준 잔여 기간을 고려
+- 모든 후보의 win_probability 합계는 반드시 1.0
+
+반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트 없이 JSON만 출력하세요:
+{
+  "candidates": [
+    {
+      "candidate": "후보명",
+      "verdict": "우세|균형|열세",
+      "win_probability": 0.0,
+      "reasoning": "여론조사 기반 종합 판정 근거 (3~5문장)"
+    }
+  ],
+  "poll_analysis": {
+    "total_surveys": 0,
+    "analysis_period": "YYYY-MM-DD ~ YYYY-MM-DD",
+    "candidate_trends": [
+      {
+        "candidate": "후보명",
+        "party": "정당명",
+        "latest_support": 0.0,
+        "trend_direction": "상승|하락|정체",
+        "trend_description": "추이 분석 (3~5문장)"
+      }
+    ],
+    "method_analysis": [
+      {
+        "method": "무선전화면접 또는 무선전화ARS",
+        "characteristics": "이 조사에서 관찰된 방법론 특성 (2~3문장)",
+        "reliability_note": "신뢰성 관련 주의사항 (1~2문장)",
+        "results_summary": "이 방법으로 조사한 결과 요약 (2~3문장)"
+      }
+    ],
+    "key_findings": ["핵심 발견 1 (1~2문장)", "핵심 발견 2", "핵심 발견 3"],
+    "trend_summary": "종합 추이 요약 (3~5문장)",
+    "reliability_assessment": "전체 여론조사 신뢰성 평가 (3~5문장)"
+  },
+  "summary": "여론조사 동향 요약 (1~2문장)"
+}"""
+
 SYSTEM_PROMPT = VERDICT_PROMPT
 
 
@@ -198,8 +266,8 @@ def _build_user_prompt_grouped(
         lines.append(f"- {cand['name']} ({cand['party']})")
     lines.append("")
 
-    from rag.poll_store import PollStore
-    poll_summary = PollStore().get_latest_summary(district["id"])
+    from rag.poll_store import create_poll_store
+    poll_summary = create_poll_store().get_latest_summary(district["id"])
     if poll_summary:
         lines.append("## 최신 여론조사 (오차범위 ±3%p)")
         lines.append(f"조사기관: {poll_summary.pollster}, 조사일: {poll_summary.survey_date}")
@@ -261,8 +329,8 @@ def _build_user_prompt(
         lines.append(f"- {cand['name']} ({cand['party']})")
     lines.append("")
 
-    from rag.poll_store import PollStore
-    poll_summary = PollStore().get_latest_summary(district["id"])
+    from rag.poll_store import create_poll_store
+    poll_summary = create_poll_store().get_latest_summary(district["id"])
     if poll_summary:
         lines.append("## 최신 여론조사 (오차범위 ±3%p)")
         lines.append(f"조사기관: {poll_summary.pollster}, 조사일: {poll_summary.survey_date}")
@@ -484,6 +552,50 @@ class AbstractScorer(ABC):
             logger.warning("[%s] 비교 파싱 실패: %s", self.name, e)
             return []
 
+    def analyze_polls(
+        self,
+        poll_entries: list,
+        poll_metas: list,
+        district: dict,
+        chunks: list[SearchResult] | None = None,
+    ) -> DailyVerdict:
+        user_prompt = _build_opinion_polls_user_prompt(
+            poll_entries, poll_metas, district, chunks,
+        )
+
+        if not poll_entries:
+            logger.warning("여론조사 데이터 0건 — 균등 확률 배분")
+            return self._empty_verdict(district)
+
+        logger.info(
+            "[%s] 여론조사 분석 요청 — %s, 조사 %d건",
+            self.name, district["name"], len(poll_entries),
+        )
+        logger.debug("[%s] 프롬프트:\n%s", self.name, user_prompt)
+
+        t0 = time.monotonic()
+        raw_response = self._call_llm(OPINION_POLLS_PROMPT, user_prompt)
+        elapsed = time.monotonic() - t0
+        logger.info("[%s] 여론조사 분석 응답 수신 — %.1f초", self.name, elapsed)
+        logger.debug("[%s] LLM 응답:\n%s", self.name, raw_response)
+
+        try:
+            verdict = _parse_opinion_polls_response(raw_response, district)
+        except (json.JSONDecodeError, KeyError, ValueError, Exception) as e:
+            logger.warning("[%s] 여론조사 분석 파싱 실패: %s", self.name, e)
+            return self._empty_verdict(district)
+
+        logger.info(
+            "[%s] 여론조사 분석 완료 — %s: %s",
+            self.name,
+            district["name"],
+            ", ".join(
+                f"{s.candidate}={s.verdict}({s.win_probability:.1%})"
+                for s in verdict.candidates
+            ),
+        )
+        return verdict
+
     @staticmethod
     def _empty_verdict(district: dict) -> DailyVerdict:
         candidates = district.get("candidates", [])
@@ -594,6 +706,132 @@ def _build_comparison_user_prompt(
     lines.append(f"\n## 비교 대상: {candidate_a} vs {candidate_b}")
     lines.append("위 두 후보를 6가지 차원에서 비교 분석하세요.")
     return "\n".join(lines)
+
+
+def _build_opinion_polls_user_prompt(
+    poll_entries: list,
+    poll_metas: list,
+    district: dict,
+    chunks: list[SearchResult] | None = None,
+) -> str:
+    from collections import defaultdict
+
+    lines = [f"## 선거구: {district['name']}\n"]
+
+    lines.append("## 후보 목록")
+    for cand in district.get("candidates", []):
+        lines.append(f"- {cand['name']} ({cand['party']})")
+    lines.append("")
+
+    survey_groups: dict[tuple[str, str], list] = defaultdict(list)
+    for entry in sorted(poll_entries, key=lambda e: (e.survey_date, e.pollster)):
+        key = (str(entry.survey_date), entry.pollster)
+        survey_groups[key].append(entry)
+
+    meta_map: dict[tuple[str, str], object] = {}
+    for m in poll_metas:
+        key = (str(m.survey_date), m.pollster)
+        meta_map[key] = m
+
+    lines.append(f"## 여론조사 데이터 ({len(survey_groups)}회 조사)\n")
+
+    for (date_str, pollster), entries in survey_groups.items():
+        meta = meta_map.get((date_str, pollster))
+
+        lines.append(f"### 조사일: {date_str} | 조사기관: {pollster}")
+        if meta:
+            if meta.method:
+                lines.append(f"  방법: {meta.method}")
+            if meta.sample_size:
+                lines.append(f"  표본: {meta.sample_size}명, 오차범위: ±{meta.margin_of_error}%p")
+            if meta.source_url:
+                lines.append(f"  출처: {meta.source_url}")
+            if meta.notes:
+                lines.append(f"  비고: {meta.notes}")
+
+        lines.append("  후보별 지지율:")
+        for entry in sorted(entries, key=lambda e: e.support, reverse=True):
+            lines.append(f"    - {entry.candidate} ({entry.party}): {entry.support}%")
+        lines.append("")
+
+    if chunks:
+        lines.append(f"## 여론조사 관련 뉴스 기사 ({len(chunks)}건)\n")
+        for i, chunk in enumerate(chunks[:10], 1):
+            text_preview = chunk.text[:200].replace("\n", " ")
+            lines.append(
+                f"[{i}] {chunk.title} ({chunk.source}, {chunk.published_at:%Y-%m-%d})"
+            )
+            lines.append(f"    {text_preview}")
+            lines.append("")
+
+    lines.append(
+        "## 요청\n"
+        "위 여론조사 데이터를 종합 분석하여:\n"
+        "1. 각 후보의 verdict(우세/균형/열세), win_probability, reasoning을 판정하세요.\n"
+        "2. 조사 방법론별 특성과 결과 차이를 분석하세요.\n"
+        "3. 후보별 지지율 추이와 동향을 분석하세요.\n"
+        "4. 핵심 발견사항과 신뢰성 평가를 포함하세요.\n"
+        "JSON으로만 응답하세요."
+    )
+    return "\n".join(lines)
+
+
+def _parse_opinion_polls_response(
+    raw: str,
+    district: dict,
+) -> DailyVerdict:
+    text = _strip_markdown_fence(raw)
+    data = json.loads(text)
+
+    candidate_parties = {
+        c["name"]: c["party"] for c in district.get("candidates", [])
+    }
+
+    scores: list[CandidateScore] = []
+    for item in data.get("candidates", []):
+        name = item["candidate"]
+        scores.append(CandidateScore(
+            candidate=name,
+            party=candidate_parties.get(name, item.get("party", "")),
+            district_id=district["id"],
+            verdict=item["verdict"],
+            win_probability=item["win_probability"],
+            reasoning=item.get("reasoning", ""),
+            supporting_chunks=[],
+            chunk_count=0,
+        ))
+
+    scores = _normalize_probabilities(scores)
+
+    poll_analysis = None
+    pa_data = data.get("poll_analysis")
+    if pa_data:
+        poll_analysis = PollTrendAnalysis(
+            total_surveys=pa_data.get("total_surveys", 0),
+            analysis_period=pa_data.get("analysis_period", ""),
+            candidate_trends=[
+                CandidatePollTrend(**ct)
+                for ct in pa_data.get("candidate_trends", [])
+            ],
+            method_analysis=[
+                PollMethodAnalysis(**ma)
+                for ma in pa_data.get("method_analysis", [])
+            ],
+            key_findings=pa_data.get("key_findings", []),
+            trend_summary=pa_data.get("trend_summary", ""),
+            reliability_assessment=pa_data.get("reliability_assessment", ""),
+        )
+
+    return DailyVerdict(
+        district_id=district["id"],
+        district_name=district["name"],
+        date=datetime.now(),
+        candidates=scores,
+        total_chunks_analyzed=0,
+        summary=data.get("summary", ""),
+        analysis_mode="opinion_polls",
+        poll_analysis=poll_analysis,
+    )
 
 
 def _strip_markdown_fence(raw: str) -> str:

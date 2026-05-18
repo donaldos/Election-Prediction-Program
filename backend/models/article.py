@@ -18,6 +18,11 @@ class RawArticle(BaseModel):
 
     matched_keywords: list[str] = []
 
+    pollster: str = ""
+    poll_survey_date: str = ""
+    sample_size: int = 0
+    margin_of_error: float = 0.0
+
 
 class Article(BaseModel):
     """전처리 완료된 기사. pipeline 내부에서 사용."""

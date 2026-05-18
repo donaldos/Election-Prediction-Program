@@ -29,6 +29,15 @@ def save_config(config: dict) -> None:
     get_config.cache_clear()
 
 
+def get_poll_store(config: dict | None = None):
+    if config is None:
+        config = get_config()
+
+    from rag.poll_store import create_poll_store
+
+    return create_poll_store(config)
+
+
 def get_vector_repo(config: dict | None = None):
     if config is None:
         config = get_config()
