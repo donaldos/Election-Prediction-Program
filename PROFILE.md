@@ -45,39 +45,9 @@
 - 판정 파이프라인: 의미 검색 → bi-encoder 필터 + Cross-encoder 정밀 재평가 → LLM 판정 + 확률 정규화
 - **LangGraph 멀티스테이지 오케스트레이션**: 5종 분석 모드(판정·진단·전략·비교·여론조사) + 역할별 프롬프트 분리 + 3중 검증(근거 일치·일관성·확률 범위) → 실패 시 자동 재판정 (최대 2회). Google Sheets 여론조사 연동 및 조사 방법론별 신뢰도 분석 포함. 노드별 구조화 JSONL 로깅으로 전 과정 추적 가능
 
-### 2. LangChain 없이 자체 구현한 이유
+### 2. Strategy + Registry 패턴으로 교체 가능한 아키텍처
 
-LangChain은 범용 RAG를 빠르게 프로토타이핑할 수 있는 프레임워크이지만, 본 프로젝트의 도메인 특화 요구사항에는 자체 구현이 더 적합하다고 판단.
-
-**LangChain 사용 시 (5줄이면 기본 RAG 완성)**
-```python
-from langchain.document_loaders import WebBaseLoader
-from langchain.text_splitters import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQA
-
-vectorstore = Chroma.from_documents(splitter.split_documents(loader.load()), OpenAIEmbeddings())
-chain = RetrievalQA.from_chain_type(llm, retriever=vectorstore.as_retriever())
-```
-
-**자체 구현을 선택한 이유**
-
-| 항목 | LangChain | 자체 구현 (본 프로젝트) |
-|------|-----------|----------------------|
-| 데이터 모델 | `Document(page_content, metadata)` 단일 모델 | `RawArticle → Article → Chunk → ChunkWithEmbedding → SearchResult → CandidateScore → DailyVerdict` 7단계 도메인 모델 |
-| 태깅 | 메타데이터 수동 관리 | 키워드 매칭 + ±50자 문맥 검증으로 후보/선거구 자동 태깅 |
-| 검색 | 단일 쿼리 → top-k | 후보 × 분석 항목(8축) 그룹별 쿼리 재구성 + Cross-encoder 재정렬 |
-| 판정 | 단일 프롬프트 체인 | 5종 역할별 프롬프트 + LangGraph 멀티스테이지 (score → validate → correct → diagnose) |
-| 여론조사 | 지원 없음 | Google Sheets 2시트 FK JOIN + 오차범위 ±3%p 통계적 판정 |
-| 디버깅 | 추상화 레이어가 깊어 추적 어려움 | 코드 직접 추적 가능, 노드별 구조화 로깅 |
-| 의존성 | `langchain` + 수십 개 하위 패키지 | 필요한 것만 (`openai`, `chromadb`, `langgraph`) |
-
-**결론**: LangChain의 `Document → TextSplitter → VectorStore → Retriever → Chain` 규격 안에서는 한국어 선거 도메인 특화 로직(문맥 검증 태깅, 후보별 그룹 검색, 오차범위 반영 판정, 여론조사 시계열 분석)을 구현하기 오히려 복잡해짐. `ComponentRegistry` + Strategy 패턴으로 LangChain과 동등한 교체 유연성을 확보하면서도, 도메인 요구사항에 최적화된 파이프라인을 구축.
-
-### 3. Strategy + Registry 패턴으로 교체 가능한 아키텍처
-
-모든 핵심 컴포넌트(Scraper 3종, Chunker 6종, Embedder 3종, VectorDB 7종, Scorer 2종, PollStore 2종)를 **설정 파일(config.yaml) 변경만으로 전환** 가능하도록 설계.
+모든 핵심 컴포넌트(Scraper 3종, Chunker 6종, Embedder 3종, VectorDB 7종, Scorer 2종)를 **설정 파일(config.yaml) 변경만으로 전환** 가능하도록 설계.
 
 ```yaml
 # 예: VectorDB를 ChromaDB에서 Qdrant로 전환 — 코드 수정 불필요
@@ -217,6 +187,28 @@ opinion_polls: analyze_polls ─────→ END
 
 ---
 
+## 일반 RAG 대비 성능 개선 설계
+
+일반적인 RAG는 `질의 → 임베딩 → VectorDB 유사도 검색 → 메타데이터 필터 → LLM 응답` 단일 흐름으로 구성된다. 본 프로젝트는 이 기본 흐름 위에 6가지 성능 개선 레이어를 추가했다.
+
+```
+일반 RAG:     query → embed → search → filter → LLM → 응답
+
+이 프로젝트:  query×42 → embed → search → filter → bi-encoder 필터 → Cross-encoder 재정렬
+              → 트리구조 프롬프트 → LLM 판정 → 3중 검증 → [자동 재판정] → 진단 → 전략 → 응답
+```
+
+| # | 개선 영역 | 일반 RAG | 이 프로젝트 |
+|---|----------|---------|------------|
+| 1 | **검색 (Retrieve)** | 단일 쿼리 1회 검색 | 후보별 × 분석 항목별(8축) **약 42개 다중 쿼리** + `후보 → 카테고리` 트리 구조 그룹핑. `query_templates.json`에 공통 쿼리 + 후보별 쿼리 사전 정의. 단일 쿼리로는 놓치는 다차원 정보를 체계적으로 수집 |
+| 2 | **재정렬 (Rerank)** | 없음 (VectorDB 유사도만 사용) | **Bi-encoder + Cross-encoder 2단계**. Stage 1에서 임계값 필터 + URL 중복 제거로 빠른 후보 추출, Stage 2에서 Cross-encoder(bge-reranker-v2-m3)가 (query, chunk) 쌍을 직접 평가하여 "강점" vs "약점" 같은 의미 혼동 보정. 그룹별 쿼리 재구성 후 적용 |
+| 3 | **프롬프트 구성** | 검색 결과를 평탄하게 나열 | **트리 구조 프롬프트 + 토큰 예산 관리**. `후보 → 카테고리(8축) → 청크` 계층 구조로 조직화, 카테고리당 상위 3건 × 200자 미리보기로 절삭하여 ~53,000 토큰 → ~15,000~18,000 토큰으로 감축. 여론조사 수치 + 오차범위(±3%p) 별도 섹션 주입 |
+| 4 | **판정 품질 보정** | 없음 (LLM 응답 그대로 반환) | **LangGraph `StateGraph` 3중 검증 + 자동 재판정**. ①근거 일치 — 판정 후보가 실제 청크에 언급되었는지, ②일관성 — 직전 판정(`VerdictStore`) 대비 승률 30%p 이상 급변 감지, ③확률 범위 — 합계=1.0, 각 값∈[0,1]. 검증 실패 시 `correct → score` 루프로 최대 2회 자동 재판정 |
+| 5 | **분석 깊이** | 단일 프롬프트로 모든 분석 요구 | **역할별 프롬프트 분리 + 멀티스테이지**. `VERDICT_PROMPT`(판정) → `DIAGNOSIS_PROMPT`(진단) → `STRATEGY_PROMPT`(전략) → `COMPARISON_PROMPT`(비교) 각 노드가 고유한 시스템 프롬프트로 분리. 이전 단계의 검증된 출력을 다음 단계의 입력 컨텍스트로 전달하여 일관된 심층 분석 보장 |
+| 6 | **데이터 순도** | 수집한 텍스트를 그대로 저장 | **수집 단계에서 품질 확보**. 기사 전문 수집(snippet 157자 → 전문 1,200자+), 문맥 검증 태깅(±50자 윈도우에 선거 맥락 단어 존재 여부 확인), 품질 필터(50자 미만 극소 청크 + 미태깅 청크 제거), 결정적 ID(`sha256`)로 중복 벡터 차단, 만료 정리(`purge_days`)로 오래된 벡터 삭제 |
+
+---
+
 ## 문제 해결 사례
 
 ### OpenAI 토큰 초과 (429 Rate Limit)
@@ -267,4 +259,4 @@ opinion_polls: analyze_polls ─────→ END
 - **프롬프트 엔지니어링**: 5종 역할별 프롬프트(VERDICT / DIAGNOSIS / STRATEGY / COMPARISON / OPINION_POLLS) + 트리 구조 + 토큰 예산 관리 + 오차범위 기반 통계적 판정 설계
 - **Full-stack 개발**: Python(FastAPI) 백엔드 + TypeScript(Next.js) 프론트엔드 + Docker 배포
 - **데이터 품질 파이프라인**: 기사 전문 수집(11개 셀렉터) + 기사 구조 인식 청킹(제목 prefix + 리드 분리) + 문맥 검증 태깅(±50자 윈도우) + 품질 필터(50자 미만·미태깅 제거)
-- **품질 관리**: 344개 테스트, Pydantic v2 도메인 모델, 3단계 로깅 정책
+- **품질 관리**: 288개 테스트, Pydantic v2 도메인 모델, 3단계 로깅 정책

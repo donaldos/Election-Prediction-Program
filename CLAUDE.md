@@ -164,6 +164,55 @@ election-radar/
 
 ---
 
+## 설계 결정: LangChain 미사용, 자체 모듈 구성
+
+본 프로젝트는 LangChain 프레임워크를 사용하지 않고, 각 파이프라인 단계를 자체 모듈로 구현한다.
+
+### 이유
+
+**1. 컴포넌트 자유 교체 (Strategy + Registry)**
+
+LangChain은 자체 추상화(`Document`, `BaseRetriever`, `VectorStore` 등)에 구현체를 맞춰야 한다.
+본 프로젝트는 Scraper 2종, Chunker 6종, Embedder 3종, VectorDB 7종, Scorer 2종을
+`config.yaml`의 `type` 값 하나로 전환할 수 있는 Strategy + Registry 패턴을 직접 구현했다.
+LangChain의 래퍼 계층을 거치지 않으므로, ChromaDB의 `$and` 다중 필터나
+`published_at_ts` 숫자 범위 필터 같은 DB별 고유 기능을 제약 없이 활용할 수 있다.
+
+**2. 한국어 처리 최적화**
+
+- 청킹: `kss` 문장 분리, 문단 경계 인식, 기사 구조(제목·리드·본문) 인식 등 한국어 특화 전략을 직접 구현
+- 태깅: 키워드 주변 ±50자 문맥 검증으로 동음이의어 오태깅("조국" 등) 방지
+- 임베딩: `KoSimCSE`, `BGE-M3` 등 한국어 특화 모델을 LangChain 래퍼 없이 직접 통합
+
+LangChain의 `RecursiveCharacterTextSplitter` 등은 영어 중심 설계로,
+한국어 문장 경계·조사·어미 처리에 부적합한 경우가 많다.
+
+**3. 의존성 최소화 + Lazy Import**
+
+LangChain은 수십 개의 하위 패키지를 연쇄 설치한다.
+본 프로젝트는 실제 사용하는 라이브러리만 설치하고, 무거운 ML 라이브러리는 Lazy Import로 처리하여
+미사용 구현체의 패키지가 없어도 전체 시스템이 정상 동작한다.
+
+**4. LangGraph만 선택적 사용**
+
+유일하게 LangGraph(`langgraph>=1.2.0`)만 도입하여 판정 오케스트레이션에 활용한다.
+RAG 파이프라인의 retrieve → rerank → score 각 단계는 자체 구현하되,
+**다단계 검증·재시도가 필요한 판정 워크플로우**만 LangGraph `StateGraph`로 관리한다.
+`--no-graph` 옵션으로 LangGraph 없이도 동작하므로, LangGraph는 품질 보정 레이어로서 선택적이다.
+
+### 자체 구현 vs LangChain 비교
+
+| 관점 | 자체 구현 (현재) | LangChain 사용 시 |
+|------|-----------------|-------------------|
+| 컴포넌트 교체 | config.yaml `type` 변경만으로 전환 | 래퍼 계층 경유, DB별 고유 기능 제한적 |
+| 한국어 처리 | kss·kiwipiepy·KoSimCSE 직접 통합 | 영어 중심 설계, 커스텀 어려움 |
+| 의존성 | 필요한 것만 설치 + Lazy Import | 거대한 의존성 트리 |
+| DB 최적화 | 필터·ID 전략 등 DB별 네이티브 기능 직접 활용 | 공통 인터페이스로 추상화, 세부 기능 손실 |
+| 유지보수 | 구현체 추가 시 직접 작성 필요 | 커뮤니티 통합 활용 가능 |
+| 프로토타이핑 | 초기 구현 비용 높음 | 빠른 PoC 가능 |
+
+---
+
 ## 핵심 아키텍처 패턴
 
 ### 1. Strategy + Registry 패턴
