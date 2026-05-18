@@ -2,6 +2,8 @@
 .env
 backend/.env
 .chroma
+service_account.json
+credentials.json
 
 # Python
 __pycache__/
